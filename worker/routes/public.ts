@@ -1,7 +1,7 @@
 import { bad, bodyJson, classifyContactInfo, id, json, nowIso, orderNo, parseCnyCents, paymentSuccess, recordValue, webhookContactFields } from "../http";
 import { getSettingValue } from "../db/settings";
 import { getLegalSettings, getSeoSettings } from "../seo";
-import { createPagePayForm, verifyAlipayNotify } from "../payment/alipay";
+import { createPagePayForm, createWapPayForm, verifyAlipayNotify } from "../payment/alipay";
 import {
   createWechatH5Payment,
   createWechatNativePayment,
@@ -175,8 +175,17 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     await env.DB.prepare("UPDATE orders SET payment_provider='alipay',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(order.id).run();
     const configuredDomain = await getSettingValue(env, "site.primary_domain");
     const origin = configuredDomain || url.origin;
-    const paymentForm = await createPagePayForm(env, { orderNo: order.order_no, amountCents: order.amount_cents, subject: `${order.product_name} - ${order.plan_name}`, origin });
-    return json({ ok: true, payment_form: paymentForm });
+    const subject = `${order.product_name} - ${order.plan_name}`;
+    const isMobile = /android|iphone|ipod|ipad|mobile/i.test(request.headers.get("user-agent") ?? "");
+    try {
+      // 手机浏览器走手机网站支付（alipay.trade.wap.pay），PC 走电脑网站支付；异步回调共用。
+      const paymentForm = isMobile
+        ? await createWapPayForm(env, { orderNo: order.order_no, amountCents: order.amount_cents, subject, origin })
+        : await createPagePayForm(env, { orderNo: order.order_no, amountCents: order.amount_cents, subject, origin });
+      return json({ ok: true, mode: isMobile ? "wap" : "page", payment_form: paymentForm });
+    } catch (error) {
+      return bad(error instanceof Error ? error.message : "支付宝下单失败", 502);
+    }
   }
 
   if (pathname === "/api/payment/alipay/notify" && request.method === "POST") {

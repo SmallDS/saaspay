@@ -332,6 +332,13 @@ export function Settings() {
 
   const alipayTab = (
     <Card title="支付宝支付" className="settings-card">
+      <Alert
+        type="info"
+        showIcon
+        message="支持电脑网站支付与手机网站支付（H5）"
+        description="系统会根据访客设备自动选择：PC 使用 alipay.trade.page.pay，手机浏览器使用 alipay.trade.wap.pay（支付中途退出会回跳到结果页）。两者共用同一套 AppID 与密钥、同一个异步回调；请确认已在支付宝开放平台同时签约「电脑网站支付」与「手机网站支付」两个产品。"
+        style={{ marginBottom: 16 }}
+      />
       <Alert type="info" showIcon message="应用私钥必须与当前 AppID 的应用公钥匹配；支付宝公钥请填写平台返回的支付宝公钥。密钥只保存在服务端。" style={{ marginBottom: 16 }} />
       <Form form={alipay} layout="vertical" onFinish={(values) => void save({ alipay: values })}>
         <Form.Item name="enabled" label="启用支付宝" valuePropName="checked"><Switch /></Form.Item>

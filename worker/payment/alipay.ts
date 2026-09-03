@@ -167,25 +167,29 @@ export type AlipayPagePayForm = {
   fields: Record<string, string>;
 };
 
-export async function createPagePayForm(
+// 电脑网站支付（alipay.trade.page.pay / FAST_INSTANT_TRADE_PAY）与手机网站支付
+// （alipay.trade.wap.pay / QUICK_WAP_WAY）签名参数结构一致，仅 method 与 product_code 不同。
+async function buildPayForm(
   env: Env,
   input: { orderNo: string; amountCents: number; subject: string; origin: string },
+  variant: { method: "alipay.trade.page.pay" | "alipay.trade.wap.pay"; productCode: string; quitUrl?: string },
 ): Promise<AlipayPagePayForm> {
   const config = await getAlipayConfig(env);
   if (!config.enabled) throw new Error("支付宝支付未启用");
   if (!config.appId || !config.privateKey || !config.alipayPublicKey) throw new Error("支付宝配置不完整");
 
-  const bizContent = JSON.stringify({
+  const bizContent: Record<string, unknown> = {
     out_trade_no: input.orderNo,
-    product_code: "FAST_INSTANT_TRADE_PAY",
+    product_code: variant.productCode,
     total_amount: (input.amountCents / 100).toFixed(2),
     subject: input.subject.slice(0, 256),
     timeout_express: "30m",
-  });
+  };
+  if (variant.quitUrl) bizContent.quit_url = variant.quitUrl;
 
   const params: Record<string, string> = {
     app_id: config.appId,
-    method: "alipay.trade.page.pay",
+    method: variant.method,
     format: "JSON",
     charset: "UTF-8",
     sign_type: "RSA2",
@@ -193,7 +197,7 @@ export async function createPagePayForm(
     version: "1.0",
     notify_url: `${input.origin}/api/payment/alipay/notify`,
     return_url: `${input.origin}/payment/result?order_no=${encodeURIComponent(input.orderNo)}`,
-    biz_content: bizContent,
+    biz_content: JSON.stringify(bizContent),
   };
 
   const key = await importRsassaPrivateKey(config.privateKey);
@@ -207,6 +211,24 @@ export async function createPagePayForm(
   }
   actionUrl.search = new URLSearchParams(actionParams).toString();
   return { action: actionUrl.toString(), fields: { biz_content: params.biz_content } };
+}
+
+export function createPagePayForm(
+  env: Env,
+  input: { orderNo: string; amountCents: number; subject: string; origin: string },
+): Promise<AlipayPagePayForm> {
+  return buildPayForm(env, input, { method: "alipay.trade.page.pay", productCode: "FAST_INSTANT_TRADE_PAY" });
+}
+
+export function createWapPayForm(
+  env: Env,
+  input: { orderNo: string; amountCents: number; subject: string; origin: string },
+): Promise<AlipayPagePayForm> {
+  return buildPayForm(env, input, {
+    method: "alipay.trade.wap.pay",
+    productCode: "QUICK_WAP_WAY",
+    quitUrl: `${input.origin}/payment/result?order_no=${encodeURIComponent(input.orderNo)}`,
+  });
 }
 
 export async function verifyAlipayNotify(env: Env, params: Record<string, string>): Promise<boolean> {

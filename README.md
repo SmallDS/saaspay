@@ -8,7 +8,7 @@
 
 - **可视化页面编辑**：基于 [Puck](https://puckeditor.com/) 的 17 种区块（Hero、特性、价格表、FAQ、对比表等），草稿与发布分离，支持版本快照与回滚。
 - **产品与套餐管理**：套餐价格由后台统一配置，页面 Pricing 区块实时读取，不重复保存金额。
-- **支付宝电脑网站支付**：本地订单 → 支付宝收银台 → 异步通知 RSA2 验签 → D1 更新订单。
+- **支付宝网站支付**：PC 走电脑网站支付（`alipay.trade.page.pay`），手机浏览器自动切换手机网站支付（`alipay.trade.wap.pay`），异步通知 RSA2 验签。
 - **微信支付（API v3）**：PC 使用 Native 扫码支付（结账页展示二维码），手机浏览器自动切换 H5 支付；支持退款与退款回调。
 - **订单运营**：主动对账同步、超时关单、部分退款 / 全额退款、批量查询 / 关闭 / 删除。
 - **对外 Webhook**：支付成功后经 Cloudflare Queue 投递，HMAC-SHA256 签名、指数退避重试、投递日志与手动重发。
@@ -126,17 +126,24 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 所有支付参数在 `/admin` 后台录入，敏感项（私钥、APIv3 密钥、Webhook Secret）以 AES-256-GCM 加密存储于 D1。
 
-### 支付宝电脑网站支付
+### 支付宝网站支付（电脑 + 手机 H5）
 
 在 **系统设置 → 支付宝支付** 填写：
 
-- **AppID**：开放平台网页应用 AppID
+- **AppID**：开放平台应用 AppID
 - **应用私钥**：与该 AppID 的应用公钥匹配的 RSA2 私钥（PKCS1 / PKCS8 均可）
 - **支付宝公钥**：支付宝开放平台返回的支付宝公钥
 - **商户 PID**：可选，填写后增强回调校验（校验 `seller_id`）
 - **网关**：默认 `https://openapi.alipay.com/gateway.do`
 
-回调地址：`https://<你的域名>/api/payment/alipay/notify`，由系统自动生成。
+无需额外配置即可覆盖两种场景，系统按访客设备自动切换：
+
+| 设备 | 接口 | product_code |
+|---|---|---|
+| PC 浏览器 | `alipay.trade.page.pay` | `FAST_INSTANT_TRADE_PAY` |
+| 手机浏览器 | `alipay.trade.wap.pay` | `QUICK_WAP_WAY`（含 `quit_url` 中途退出回跳） |
+
+请确认已在支付宝开放平台签约「电脑网站支付」与「手机网站支付」两个产品。回调地址：`https://<你的域名>/api/payment/alipay/notify`，两者共用。
 
 ### 微信支付（Native 扫码 + H5）
 
