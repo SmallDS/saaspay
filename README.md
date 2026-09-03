@@ -176,6 +176,8 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 ## SEO 与站点优化
 
+**主要域名**（系统设置 → 网站）：统一决定 canonical、Open Graph URL、相对分享图地址、WebSite JSON-LD、robots.txt 中的 Sitemap 地址、站点地图页面地址，以及微信/支付宝支付通知与回跳地址。前端加载后继续使用服务端返回的同一域名。通过代理访问时请填写对外正式 HTTPS 域名，避免回源域名进入搜索索引；不填写时使用服务器实际收到的请求域名。该设置不改变 API 请求来源校验，代理支付来源仍需按上文配置。
+
 可视化编辑器内置 25 个区块组件（基础 / 营销 / 商业三类），全部默认文案为中文；页面模板与组件内容开箱即中文。
 
 **服务端 SEO 注入**：Worker 接管页面请求，在返回 HTML 时注入 `<title>`、`description`、`keywords`、Open Graph、`canonical`、`robots` meta 与 WebSite 结构化数据（JSON-LD）——无需浏览器执行脚本，百度、搜狗等搜索引擎可直接抓取。静态资源原样透传。

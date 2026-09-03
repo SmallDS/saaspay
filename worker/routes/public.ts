@@ -1,5 +1,6 @@
 import { bad, bodyJson, classifyContactInfo, id, json, nowIso, orderNo, parseCnyCents, paymentSuccess, recordValue, webhookContactFields } from "../http";
 import { getSettingValue } from "../db/settings";
+import { getSiteOrigin } from "../site-origin";
 import { assertSameOrigin } from "../auth/session";
 import { getLegalSettings, getSeoSettings } from "../seo";
 import { createPagePayForm, createWapPayForm, verifyAlipayNotify } from "../payment/alipay";
@@ -42,7 +43,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
   const pathname = url.pathname;
   if (pathname === "/api/health") return json({ ok: true, service: "saas-store-cf", time: nowIso() });
   if (pathname === "/api/public/site" && request.method === "GET") {
-    const [name, tagline, themeRaw, headerRaw, footerRaw, seo, legal] = await Promise.all([
+    const [name, tagline, themeRaw, headerRaw, footerRaw, seo, legal, publicOrigin] = await Promise.all([
       getSettingValue(env, "site.name", "SaaS Store"),
       getSettingValue(env, "site.tagline", ""),
       getSettingValue(env, "site.theme", JSON.stringify(defaultThemeSettings)),
@@ -50,10 +51,12 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
       getSettingValue(env, "site.footer", JSON.stringify(defaultFooterSettings)),
       getSeoSettings(env),
       getLegalSettings(env),
+      getSiteOrigin(env, url.origin),
     ]);
     return json({ ok: true, site: {
       name,
       tagline,
+      public_origin: publicOrigin,
       theme: parseSettingJson(themeRaw, defaultThemeSettings, normalizeThemeSettings),
       header: parseSettingJson(headerRaw, defaultHeaderSettings, normalizeHeaderSettings),
       footer: parseSettingJson(footerRaw, defaultFooterSettings, normalizeFooterSettings),
@@ -173,8 +176,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     if (order.status === "closed") return bad("订单已关闭，请重新下单", 409);
     if (order.status !== "pending") return bad("订单当前状态不可支付", 409);
     await env.DB.prepare("UPDATE orders SET payment_provider='alipay',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(order.id).run();
-    const configuredDomain = await getSettingValue(env, "site.primary_domain");
-    const origin = configuredDomain || url.origin;
+    const origin = await getSiteOrigin(env, url.origin);
     const subject = `${order.product_name} - ${order.plan_name}`;
     const isMobile = /android|iphone|ipod|ipad|mobile/i.test(request.headers.get("user-agent") ?? "");
     try {
@@ -234,8 +236,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     if (!config.enabled) return bad("微信支付未启用", 409);
     const claimed = await env.DB.prepare("UPDATE orders SET payment_provider='wechat',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'").bind(order.id).run();
     if (claimed.meta.changes !== 1) return bad("订单状态已变化，请刷新后重试", 409);
-    const configuredDomain = (await getSettingValue(env, "site.primary_domain")).replace(/\/$/, "");
-    const origin = configuredDomain || url.origin;
+    const origin = await getSiteOrigin(env, url.origin);
     const description = `${order.product_name} - ${order.plan_name}`;
     const notifyUrl = `${origin}/api/payment/wechat/notify`;
     try {

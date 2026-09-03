@@ -1,5 +1,6 @@
 import { base64ToBytes, bytesToBase64, toBytes } from "../crypto/base64";
 import { getSettingValue, setSetting } from "../db/settings";
+import { getSiteOrigin } from "../site-origin";
 import type { ChannelCloseResult, ChannelQueryResult, ChannelRefundResult, PaymentChannel } from "./provider";
 import { asRecord, importRsassaPrivateKey, importRsassaPublicKey } from "./rsa";
 import type { PaymentOrder } from "../orders/lifecycle";
@@ -307,7 +308,7 @@ export const wechatChannel: PaymentChannel = {
   async refund(env: Env, order: PaymentOrder, refund: PaymentRefund, amountCents: number, reason: string): Promise<ChannelRefundResult> {
     const config = await getWechatConfig(env);
     ensureWechatConfigured(config);
-    const domain = (await getSettingValue(env, "site.primary_domain")).replace(/\/$/, "");
+    const domain = await getSiteOrigin(env);
     try {
       const created = await createWechatRefund(config, {
         orderNo: order.order_no,

@@ -4,11 +4,12 @@ import { Render, type Data } from "@puckeditor/core";
 import QRCode from "qrcode";
 import { api, money } from "../shared/api";
 import { getPageHeading } from "../shared/page-heading";
+import { canonicalPageUrl, siteImageUrl } from "../shared/site-url";
 import { isWechatBrowser, type WechatPaymentResponse } from "../shared/wechat";
 import { defaultPageData, pageConfig, type StorefrontAsset, type StorefrontPlan, type StorefrontProduct } from "../editor/config";
 import { defaultFooter, defaultHeader, defaultLegal, defaultSeo, defaultTheme, safeSiteHref, type SiteFooterSettings, type SiteHeaderSettings, type SiteLegalSettings, type SiteSeoSettings, type SiteThemeSettings } from "../editor/site";
 
-type Site = { name: string; tagline: string; theme: SiteThemeSettings; header: SiteHeaderSettings; footer: SiteFooterSettings; seo: SiteSeoSettings; legal: SiteLegalSettings };
+type Site = { name: string; tagline: string; public_origin: string; theme: SiteThemeSettings; header: SiteHeaderSettings; footer: SiteFooterSettings; seo: SiteSeoSettings; legal: SiteLegalSettings };
 type PagePayload = { id: string; title: string; slug: string; seo_title?: string; seo_description?: string; og_image?: string | null; published_json: string };
 type Order = { order_no: string; product_name: string; plan_name: string; amount_cents: number; refunded_cents?: number; currency: string; status: "pending" | "paid" | "closed" | "refunded"; payment_provider?: string; paid_at?: string | null };
 type CheckoutFormValues = { contact_name?: string; contact_info?: string };
@@ -41,12 +42,13 @@ async function renderWechatQr(codeUrl: string): Promise<string> {
   }
 }
 
-const initialSite: Site = { name: "SaaS Store", tagline: "", theme: defaultTheme, header: defaultHeader, footer: defaultFooter, seo: defaultSeo, legal: defaultLegal };
+const initialSite: Site = { name: "SaaS Store", tagline: "", public_origin: "", theme: defaultTheme, header: defaultHeader, footer: defaultFooter, seo: defaultSeo, legal: defaultLegal };
 
 function mergeSite(incoming: Partial<Site>): Site {
   return {
     name: incoming.name || initialSite.name,
     tagline: incoming.tagline || "",
+    public_origin: incoming.public_origin || "",
     theme: { ...defaultTheme, ...(incoming.theme ?? {}) },
     header: { ...defaultHeader, ...(incoming.header ?? {}), links: incoming.header?.links ?? defaultHeader.links },
     footer: { ...defaultFooter, ...(incoming.footer ?? {}), links: incoming.footer?.links ?? defaultFooter.links },
@@ -109,14 +111,18 @@ function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
   }, [site.theme]);
 
   useEffect(() => {
+    if (loading) return;
+    const origin = site.public_origin || location.origin;
     const title = page?.seo_title || page?.title || site.name;
     const description = page?.seo_description || site.tagline;
     document.title = title;
     setMeta("description", description);
     setMeta("og:title", title, "property");
     setMeta("og:description", description, "property");
-    if (page?.og_image) setMeta("og:image", page.og_image, "property");
-    const canonical = new URL(slug === "home" ? "/" : `/${encodeURIComponent(slug)}`, location.origin).href;
+    const ogImage = siteImageUrl(page?.og_image || site.seo.default_og_image, origin);
+    if (ogImage) setMeta("og:image", ogImage, "property");
+    const canonical = canonicalPageUrl(origin, location.pathname);
+    setMeta("og:url", canonical, "property");
     let link = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
     if (!link) {
       link = document.createElement("link");
@@ -124,7 +130,7 @@ function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
       document.head.appendChild(link);
     }
     link.href = canonical;
-  }, [page, site, slug]);
+  }, [page, site, slug, loading]);
 
   function buy(planId: string) {
     location.href = "/checkout?plan_id=" + encodeURIComponent(planId);

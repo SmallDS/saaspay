@@ -1,6 +1,7 @@
 import { getSettingValue } from "./db/settings";
 import { recordValue } from "./http";
 import { parseSettingJson, textValue } from "./site-settings";
+import { siteImageUrl } from "../src/shared/site-url";
 
 export type SeoSettings = {
   keywords: string;
@@ -83,7 +84,7 @@ export function buildSeoHeadTags(meta: SeoPageMeta, options: { origin: string; s
   const description = escapeHtml(stripTags(meta.description).slice(0, 200));
   const keywords = escapeHtml(meta.keywords || options.seo.keywords);
   const ogImage = meta.og_image || options.seo.default_og_image;
-  const ogImageAbs = ogImage && !/^https:\/\//i.test(ogImage) ? `${options.origin}${ogImage}` : ogImage;
+  const ogImageAbs = siteImageUrl(ogImage, options.origin);
   const tags: string[] = [
     `<title>${title}</title>`,
     `<meta name="description" content="${description}">`,

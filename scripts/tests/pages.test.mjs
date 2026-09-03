@@ -9,7 +9,11 @@ import "./register-typescript.mjs";
 
 const { createAiPageBlock, pageConfig } = await import("../../src/editor/config.tsx");
 const { getPageHeading } = await import("../../src/shared/page-heading.ts");
-const { handleHtmlPage } = await import("../../worker/routes/html.ts");
+const { handleHtmlPage, handleSeoFiles } = await import("../../worker/routes/html.ts");
+const { handlePublic } = await import("../../worker/routes/public.ts");
+const { handleAdmin } = await import("../../worker/routes/admin.ts");
+const { createAdminSessionCookie } = await import("../../worker/auth/session.ts");
+const { canonicalPageUrl, siteImageUrl } = await import("../../src/shared/site-url.ts");
 
 function renderBlock(type, props) {
   return renderToStaticMarkup(createElement(Render, {
@@ -60,17 +64,20 @@ function htmlFixture(t) {
   const migrations = new URL("../../migrations/", import.meta.url);
   for (const file of readdirSync(migrations).filter((file) => file.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(file, migrations), "utf8"));
   t.after(() => db.close());
-  const env = { DB: { prepare(sql) {
+  const env = { ADMIN_USERNAME: "test-admin", ADMIN_PASSWORD: "test-password", DB: { prepare(sql) {
     const statement = db.prepare(sql);
     let values = [];
     return {
       bind(...args) { values = args; return this; },
       async first() { return statement.get(...values) ?? null; },
+      async all() { return { results: statement.all(...values) }; },
+      async run() { return { meta: { changes: Number(statement.run(...values).changes) } }; },
     };
   } } };
   const template = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
   return {
     db,
+    env,
     publish(data, title = "配镜工作台") {
       db.prepare("UPDATE pages SET title=?,status='published',published_json=?,draft_json=? WHERE slug='home'")
         .run(title, JSON.stringify(data), JSON.stringify({ content: [{ type: "Hero", props: { title: "未发布的草稿标题" } }] }));
@@ -146,4 +153,63 @@ test("unpublished, missing and transactional pages do not receive storefront hea
     assert.doesNotMatch(html, /<h1\b|私人草稿/);
     assert.match(html, /name="robots" content="noindex, nofollow"/);
   }
+});
+
+test("the configured primary domain controls server SEO, sitemaps and the origin supplied to the client", async (t) => {
+  const fixture = htmlFixture(t);
+  fixture.db.prepare("UPDATE pages SET og_image='/media/cover.png' WHERE slug='home'").run();
+  for (const domain of ["HTTPS://PUBLIC.EXAMPLE:443///", "https://new.example/"]) {
+    fixture.db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('site.primary_domain',?)").run(domain);
+    const expected = new URL(domain).origin;
+    const html = await fixture.html();
+    assert.ok(html.includes(`<link rel="canonical" href="${expected}/">`));
+    assert.ok(html.includes(`<meta property="og:url" content="${expected}/">`));
+    assert.ok(html.includes(`<meta property="og:image" content="${expected}/media/cover.png">`));
+    assert.ok(html.includes(`"url":"${expected}"`));
+    const robots = await handleSeoFiles(fixture.env, new URL("https://shop.example/robots.txt"));
+    assert.ok((await robots.text()).includes(`Sitemap: ${expected}/sitemap.xml`));
+    const sitemap = await handleSeoFiles(fixture.env, new URL("https://shop.example/sitemap.xml"));
+    assert.ok((await sitemap.text()).includes(`<loc>${expected}/</loc>`));
+    const request = new Request("https://shop.example/api/public/site");
+    const response = await handlePublic(request, fixture.env, new URL(request.url));
+    const { site } = await response.json();
+    assert.equal(site.public_origin, expected);
+    assert.equal(canonicalPageUrl(site.public_origin, "/home/"), `${expected}/`);
+    assert.equal(canonicalPageUrl(site.public_origin, "/%E5%B8%AE%E5%8A%A9/"), `${expected}/%E5%B8%AE%E5%8A%A9`);
+    assert.ok((await fixture.html("/%E5%B8%AE%E5%8A%A9/")).includes(`href="${expected}/%E5%B8%AE%E5%8A%A9"`));
+    assert.equal(siteImageUrl("/media/cover.png", site.public_origin), `${expected}/media/cover.png`);
+    assert.equal(siteImageUrl("https://images.example/cover.png", site.public_origin), "https://images.example/cover.png");
+    assert.equal(siteImageUrl("https://[invalid", site.public_origin), "");
+  }
+});
+
+test("blank or invalid legacy primary domains fall back to the request origin without trusting proxy headers", async (t) => {
+  const fixture = htmlFixture(t);
+  for (const value of ["", " ", "not-a-url", "https://public.example/subpath", "javascript:alert(1)"]) {
+    fixture.db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('site.primary_domain',?)").run(value);
+    const request = new Request("https://shop.example/api/public/site", { headers: { "x-forwarded-host": "attacker.example", "x-forwarded-proto": "http" } });
+    const response = await handlePublic(request, fixture.env, new URL(request.url));
+    assert.equal((await response.json()).site.public_origin, "https://shop.example");
+    assert.match(await fixture.html(), /rel="canonical" href="https:\/\/shop.example\/"/);
+  }
+});
+
+test("saving the primary domain normalizes origins and rejects invalid input before changing settings", async (t) => {
+  const fixture = htmlFixture(t);
+  const cookie = (await createAdminSessionCookie(fixture.env)).split(";")[0];
+  const call = async (site) => {
+    const request = new Request("https://shop.example/api/admin/settings", { method: "PUT", headers: { cookie, origin: "https://shop.example", "content-type": "application/json" }, body: JSON.stringify({ site }) });
+    return handleAdmin(request, fixture.env, new URL(request.url));
+  };
+  assert.equal((await call({ primary_domain: " HTTPS://PUBLIC.EXAMPLE:443/// " })).status, 200);
+  assert.equal(fixture.db.prepare("SELECT value FROM settings WHERE key='site.primary_domain'").get().value, "https://public.example");
+  const nameBefore = fixture.db.prepare("SELECT value FROM settings WHERE key='site.name'").get().value;
+  for (const value of ["example.com", "https://example.com/path", "https://example.com/?a=1", "https://example.com/#a", "https://user:password@example.com", "javascript:alert(1)", {}, 42]) {
+    const response = await call({ primary_domain: value, name: "should not be saved" });
+    assert.equal(response.status, 400);
+    assert.equal(fixture.db.prepare("SELECT value FROM settings WHERE key='site.name'").get().value, nameBefore);
+    assert.equal(fixture.db.prepare("SELECT value FROM settings WHERE key='site.primary_domain'").get().value, "https://public.example");
+  }
+  assert.equal((await call({ primary_domain: "" })).status, 200);
+  assert.equal(fixture.db.prepare("SELECT value FROM settings WHERE key='site.primary_domain'").get().value, "");
 });

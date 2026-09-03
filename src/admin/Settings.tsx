@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { Alert, Button, Card, Checkbox, Col, Form, Input, Progress, Row, Select, Space, Switch, Tabs, Typography, message } from "antd";
 import type { FormInstance } from "antd";
 import { api } from "../shared/api";
+import { normalizeSiteOrigin } from "../shared/site-url";
 import { defaultTheme, type SiteFooterSettings, type SiteHeaderSettings, type SiteThemeSettings } from "../editor/site";
 
 type AiUsage = { day: string; neurons_used: number; calls: number; limit: number };
@@ -333,7 +334,7 @@ export function Settings() {
       <Form form={site} layout="vertical" onFinish={(values) => void save({ site: values })}>
         <Form.Item name="name" label="网站名称" rules={[{ required: true, message: "请输入网站名称" }]}><Input maxLength={80} /></Form.Item>
         <Form.Item name="tagline" label="网站副标题"><Input maxLength={160} /></Form.Item>
-        <Form.Item name="primary_domain" label="主要域名" extra="用于支付通知、回跳和微信网页授权；请填写正式 HTTPS 域名，留空使用当前访问域名"><Input placeholder="https://example.com" /></Form.Item>
+        <Form.Item name="primary_domain" label="主要域名" extra="统一用于搜索引擎规范网址、站点地图、分享信息及支付通知与回跳。请填写正式 HTTPS 域名，不含页面路径；留空使用服务器收到的访问域名。" rules={[{ validator: (_, value: unknown) => value == null || (typeof value === "string" && !value.trim()) || normalizeSiteOrigin(value) ? Promise.resolve() : Promise.reject(new Error("请填写完整域名，例如 https://example.com，不含路径或参数")) }]}><Input placeholder="https://example.com" /></Form.Item>
         <Button type="primary" htmlType="submit">保存网站设置</Button>
       </Form>
     </Card>

@@ -97,7 +97,7 @@ test("legacy oversized order numbers fail before making provider requests", asyn
 
 test("Native uses the configured notification domain without OAuth redirects", async (t) => {
   const { env, fetchMock } = await fixture(t);
-  await setSetting(env, "site.primary_domain", "https://canonical.example/");
+  await setSetting(env, "site.primary_domain", " HTTPS://CANONICAL.EXAMPLE:443/// ");
   fetchMock.mock.mockImplementation(async (url, init) => {
     assert.equal(new URL(url).pathname, "/v3/pay/transactions/native");
     assert.equal(JSON.parse(init.body).notify_url, "https://canonical.example/api/payment/wechat/notify");
@@ -106,6 +106,26 @@ test("Native uses the configured notification domain without OAuth redirects", a
   const response = await handle(paymentRequest(), env);
   assert.equal((await response.json()).mode, "native");
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("Alipay desktop and mobile callback and return URLs use the same primary domain", async (t) => {
+  const { env } = await fixture(t);
+  await setSetting(env, "site.primary_domain", " HTTPS://CANONICAL.EXAMPLE:443/// ");
+  await setSetting(env, "payment.alipay.enabled", "true");
+  await setSetting(env, "payment.alipay.app_id", "test-app");
+  await setSetting(env, "payment.alipay.private_key", privateKey, true);
+  await setSetting(env, "payment.alipay.public_key", Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64"), true);
+  for (const userAgent of ["Windows Chrome", "iPhone Safari"]) {
+    const request = new Request(origin + "/api/payment/alipay/create", { method: "POST", headers: { "content-type": "application/json", "user-agent": userAgent }, body: JSON.stringify({ order_no: orderNo }) });
+    const response = await handle(request, env);
+    assert.equal(response.status, 200);
+    const payment = await response.json();
+    const fields = { ...Object.fromEntries(new URL(payment.payment_form.action).searchParams), ...payment.payment_form.fields };
+    assert.equal(fields.notify_url, "https://canonical.example/api/payment/alipay/notify");
+    assert.equal(fields.return_url, "https://canonical.example/payment/result?order_no=" + orderNo);
+    if (payment.mode === "wap") assert.equal(JSON.parse(fields.biz_content).quit_url, fields.return_url);
+    assert.ok(fields.sign);
+  }
 });
 
 test("disabled or incomplete Native settings cannot initiate payment", async (t) => {

@@ -1,6 +1,7 @@
 import { isAdmin, assertSameOrigin } from "../auth/session";
 import { bad, bodyJson, id, json, nowIso } from "../http";
 import { listSettings, setSetting } from "../db/settings";
+import { normalizeSiteOrigin } from "../../src/shared/site-url";
 import {
   AI_MODEL_OPTIONS,
   DEFAULT_AI_MODEL,
@@ -122,11 +123,15 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     if (input.wechat?.api_v3_key?.trim() && input.wechat.api_v3_key.trim().length !== 32) {
       return bad("微信支付 APIv3 密钥必须为 32 位字符");
     }
+    const primaryDomain = input.site?.primary_domain;
+    if (primaryDomain !== undefined && (typeof primaryDomain !== "string" || (primaryDomain.trim() && !normalizeSiteOrigin(primaryDomain)))) {
+      return bad("主要域名须为完整的 HTTP(S) 域名，不得包含路径、参数、账号或密码");
+    }
     const writes: Promise<void>[] = [];
     if (input.site) {
       if (typeof input.site.name === "string") writes.push(setSetting(env, "site.name", input.site.name.trim()));
       if (typeof input.site.tagline === "string") writes.push(setSetting(env, "site.tagline", input.site.tagline.trim()));
-      if (typeof input.site.primary_domain === "string") writes.push(setSetting(env, "site.primary_domain", input.site.primary_domain.trim().replace(/\/$/, "")));
+      if (typeof primaryDomain === "string") writes.push(setSetting(env, "site.primary_domain", normalizeSiteOrigin(primaryDomain)));
       if (input.site.theme) writes.push(setSetting(env, "site.theme", JSON.stringify(normalizeThemeSettings(input.site.theme))));
       if (input.site.header) writes.push(setSetting(env, "site.header", JSON.stringify(normalizeHeaderSettings(input.site.header))));
       if (input.site.footer) writes.push(setSetting(env, "site.footer", JSON.stringify(normalizeFooterSettings(input.site.footer))));
