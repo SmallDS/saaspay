@@ -9,7 +9,6 @@ export type WechatJsapiParams = {
 
 export type WechatPaymentResponse =
   | { mode: "native"; code_url: string }
-  | { mode: "h5"; h5_url: string }
   | { mode: "redirect"; redirect_url: string }
   | { mode: "jsapi"; pay_params: WechatJsapiParams };
 

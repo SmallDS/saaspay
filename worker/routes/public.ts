@@ -5,7 +5,6 @@ import { getWechatOpenId, handleWechatOAuthCallback, startWechatOAuth } from "..
 import { getLegalSettings, getSeoSettings } from "../seo";
 import { createPagePayForm, createWapPayForm, verifyAlipayNotify } from "../payment/alipay";
 import {
-  createWechatH5Payment,
   createWechatJsapiPayment,
   createWechatNativePayment,
   decryptWechatResource,
@@ -244,9 +243,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     const origin = configuredDomain || url.origin;
     const description = `${order.product_name} - ${order.plan_name}`;
     const notifyUrl = `${origin}/api/payment/wechat/notify`;
-    const isMobile = /android|iphone|ipod|ipad|mobile/i.test(request.headers.get("user-agent") ?? "");
     const isWechat = /micromessenger/i.test(request.headers.get("user-agent") ?? "");
-    const clientIp = request.headers.get("cf-connecting-ip") ?? "";
     try {
       if (isWechat && config.jsapiEnabled) {
         const paymentOrigin = new URL(origin).origin;
@@ -261,10 +258,6 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
         if (!openid) return await startWechatOAuth(request, env, config, order.order_no);
         const params = await createWechatJsapiPayment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl, openid });
         return json({ ok: true, mode: "jsapi", pay_params: params });
-      }
-      if (isMobile && !isWechat) {
-        const payment = await createWechatH5Payment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl, payerClientIp: clientIp });
-        return json({ ok: true, mode: "h5", h5_url: payment.h5_url });
       }
       const payment = await createWechatNativePayment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl });
       return json({ ok: true, mode: "native", code_url: payment.code_url });

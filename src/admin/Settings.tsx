@@ -366,7 +366,7 @@ export function Settings() {
       <Alert
         type="info"
         showIcon
-        message="支持 Native 扫码、手机浏览器 H5 和微信内 JSAPI 支付；请先在商户平台开通对应产品。"
+        message="支持 Native 扫码和微信内 JSAPI 支付；电脑及手机外部浏览器均显示支付二维码。请先在商户平台开通对应产品。"
         description="配置顺序：商户平台 → API 安全 中获取 APIv3 密钥、商户证书序列号和商户私钥（apiclient_key.pem）。使用微信支付公钥模式的商户请同时填写微信支付公钥与公钥 ID。"
         style={{ marginBottom: 16 }}
       />

@@ -63,11 +63,11 @@ test("generated order numbers fit the WeChat contract and reach every payment mo
   assert.match(no, /^[A-Za-z0-9_|*\-]{6,32}$/);
   db.prepare("UPDATE orders SET order_no=? WHERE order_no=?").run(no, orderNo);
   const token = await encryptSecret(env, JSON.stringify({ purpose: "wechat-jsapi", appid: "wx_test", openid: "openid", exp: Math.floor(Date.now() / 1000) + 300 }));
-  for (const [ua, mode] of [["Windows Chrome", "native"], ["iPhone Safari", "h5"], [wxUA, "jsapi"]]) {
+  for (const [ua, mode] of [["Windows Chrome", "native"], ["iPhone Safari", "native"], [wxUA, "jsapi"]]) {
     fetchMock.mock.mockImplementation(async (url, init) => {
       assert.equal(new URL(url).pathname, `/v3/pay/transactions/${mode}`);
       assert.equal(JSON.parse(init.body).out_trade_no, no);
-      return Response.json({ code_url: "weixin://pay/test", h5_url: "https://wx.tenpay.com/pay", prepay_id: "wx_test_prepay" });
+      return Response.json({ code_url: "weixin://pay/test", prepay_id: "wx_test_prepay" });
     });
     const response = await handle(paymentRequest(`__Host-saas_wechat_session=${encodeURIComponent(token)}`, ua, { order_no: no }), env);
     assert.equal(response.status, 200);
@@ -219,16 +219,16 @@ test("OpenID sessions reject tampering, expiration, wrong purpose and different 
   assert.equal(await getWechatOpenId(paymentRequest(`__Host-saas_wechat_session=${encodeURIComponent(token)}`), env, "wx_test"), "openid");
 });
 
-test("browser routing preserves H5/Native and uses Native in WeChat when JSAPI is off", async (t) => {
+test("desktop and mobile browsers use Native; WeChat also uses Native when JSAPI is off", async (t) => {
   const { env, fetchMock } = await fixture(t);
-  for (const [ua, enabled, mode] of [["iPhone Safari", "true", "h5"], ["Windows Chrome", "true", "native"], [wxUA, "false", "native"]]) {
+  for (const [ua, enabled] of [["iPhone Safari", "true"], ["Android Chrome", "true"], ["iPhone Safari", "false"], ["Windows Chrome", "true"], [wxUA, "false"]]) {
     await setSetting(env, "payment.wechat.jsapi_enabled", enabled);
     fetchMock.mock.mockImplementation(async (url) => {
-      assert.equal(new URL(url).pathname, `/v3/pay/transactions/${mode}`);
-      return Response.json(mode === "h5" ? { h5_url: "https://wx.tenpay.com/pay" } : { code_url: "weixin://pay/test" });
+      assert.equal(new URL(url).pathname, "/v3/pay/transactions/native");
+      return Response.json({ code_url: "weixin://pay/test" });
     });
     const response = await handle(paymentRequest("", ua), env);
-    assert.equal((await response.json()).mode, mode);
+    assert.deepEqual(await response.json(), { ok: true, mode: "native", code_url: "weixin://pay/test" });
   }
 });
 
@@ -256,14 +256,14 @@ test("paid/closed orders and cross-origin requests never initiate a payment", as
 
 test("browser payments without Origin accept verified same-origin Referer or Fetch Metadata", async (t) => {
   const { env, fetchMock } = await fixture(t);
-  for (const [ua, mode] of [["iPhone Safari", "h5"], ["Windows Chrome", "native"], [wxUA, "redirect"]]) {
+  for (const [ua, mode] of [["iPhone Safari", "native"], ["Windows Chrome", "native"], [wxUA, "redirect"]]) {
     for (const headers of [{ referer: origin + "/checkout?plan=test" }, { "sec-fetch-site": "same-origin" }, { referer: origin + "/payment/result", "sec-fetch-site": "same-origin" }]) {
       const request = paymentRequest("", ua);
       request.headers.delete("origin");
       for (const [key, value] of Object.entries(headers)) request.headers.set(key, value);
       fetchMock.mock.mockImplementation(async (url) => {
         assert.equal(new URL(url).pathname, `/v3/pay/transactions/${mode}`);
-        return Response.json(mode === "h5" ? { h5_url: "https://wx.tenpay.com/pay" } : { code_url: "weixin://pay/test" });
+        return Response.json({ code_url: "weixin://pay/test" });
       });
       const response = await handle(request, env);
       assert.equal(response.status, 200);

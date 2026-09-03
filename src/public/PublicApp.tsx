@@ -32,10 +32,6 @@ function submitAlipayPayment(payment: AlipayPaymentForm): void {
   form.submit();
 }
 
-function isMobileUserAgent(): boolean {
-  return /android|iphone|ipod|ipad|mobile/i.test(navigator.userAgent);
-}
-
 async function renderWechatQr(codeUrl: string): Promise<string | null> {
   try {
     return await QRCode.toDataURL(codeUrl, { width: 260, margin: 1 });
@@ -264,11 +260,6 @@ function CheckoutPage() {
           method: "POST",
           body: JSON.stringify({ order_no: created.order.order_no }),
         });
-        if (payment.mode === "h5" && payment.h5_url) {
-          sessionStorage.setItem(PENDING_WECHAT_ORDER_KEY, created.order.order_no);
-          location.href = payment.h5_url;
-          return;
-        }
         if (payment.mode === "native" && payment.code_url) {
           setWechatPay({ orderNo: created.order.order_no, qrImage: (await renderWechatQr(payment.code_url)) ?? "" });
           return;
@@ -345,7 +336,7 @@ function CheckoutPage() {
             >
               <Input maxLength={254} placeholder="请输入手机号或邮箱" />
             </Form.Item>
-            <Form.Item label="支付方式" extra={!methods.alipay && !methods.wechat ? "商家暂未开通在线支付" : isMobileUserAgent() && payMethod === "wechat" ? "将在微信内或手机浏览器中完成支付" : undefined}>
+            <Form.Item label="支付方式" extra={!methods.alipay && !methods.wechat ? "商家暂未开通在线支付" : payMethod === "wechat" ? (isWechatBrowser() ? "将在微信内完成支付" : "将显示支付二维码，请使用微信扫一扫完成支付") : undefined}>
               {methods.alipay || methods.wechat ? (
                 <Radio.Group value={payMethod} onChange={(event) => setPayMethod(event.target.value)}>
                   {methods.alipay ? <Radio value="alipay">支付宝</Radio> : null}
@@ -450,11 +441,6 @@ function PaymentResult() {
         setRefreshToken((value) => value + 1);
         return;
       }
-      if (payment.mode === "h5" && payment.h5_url) {
-        sessionStorage.setItem(PENDING_WECHAT_ORDER_KEY, orderNo);
-        location.href = payment.h5_url;
-        return;
-      }
       if (payment.mode === "native" && payment.code_url) {
         setQrImage(await renderWechatQr(payment.code_url));
         setQrOpen(true);
@@ -471,7 +457,7 @@ function PaymentResult() {
   useEffect(() => {
     if (autoOpened.current) return;
     if (!order || order.status !== "pending") return;
-    if (payParam !== "wxh5" && payParam !== "wxjsapi") return;
+    if (payParam !== "wxjsapi") return;
     if (provider !== "wechat") return;
     autoOpened.current = true;
     void openWechatPayment();
@@ -505,7 +491,7 @@ function PaymentResult() {
     <Result
       status="info"
       title="等待支付结果"
-      subTitle={"完成支付后页面会自动更新；如果尚未支付，可以继续打开" + (provider === "wechat" ? "微信" : "支付宝") + "收银台。"}
+      subTitle={provider === "wechat" && !isWechatBrowser() ? "完成支付后页面会自动更新；点击继续支付可显示微信支付二维码。" : "完成支付后页面会自动更新；如果尚未支付，可以继续打开" + (provider === "wechat" ? "微信" : "支付宝") + "收银台。"}
       extra={<Space><Tag>{order.order_no}</Tag><Button type="primary" loading={retrying} onClick={() => void continuePayment()}>继续支付</Button><Button onClick={refresh}>刷新</Button><Button href="/">返回首页</Button></Space>}
     />
     <WechatQrModal open={qrOpen} qrImage={qrImage} onClose={() => setQrOpen(false)} />

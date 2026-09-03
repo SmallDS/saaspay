@@ -270,32 +270,6 @@ export async function createWechatJsapiPayment(
   return { ...params, paySign };
 }
 
-export async function createWechatH5Payment(
-  config: WechatConfig,
-  input: { orderNo: string; amountCents: number; description: string; notifyUrl: string; payerClientIp: string },
-): Promise<{ h5_url: string }> {
-  ensureWechatConfigured(config);
-  const result = await wechatRequest(config, "POST", "/v3/pay/transactions/h5", {
-    appid: config.appId,
-    mchid: config.mchId,
-    description: input.description.slice(0, 127),
-    out_trade_no: input.orderNo,
-    time_expire: paymentExpiry(),
-    notify_url: input.notifyUrl,
-    amount: { total: input.amountCents, currency: "CNY" },
-    scene_info: {
-      payer_client_ip: input.payerClientIp || "127.0.0.1",
-      h5_info: { type: "Wap" },
-    },
-  });
-  const h5Url = String(result.data?.h5_url ?? "");
-  if (!result.ok || !h5Url) {
-    const error = wechatError(result.data);
-    throw new WechatPayError(error.code, error.message || error.code || "微信支付下单失败");
-  }
-  return { h5_url: h5Url };
-}
-
 async function queryWechatTrade(config: WechatConfig, orderNo: string): Promise<{ state: string; transactionId: string; totalCents: number | null }> {
   const result = await wechatRequest(config, "GET", `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNo)}?mchid=${encodeURIComponent(config.mchId)}`);
   if (!result.ok) {
