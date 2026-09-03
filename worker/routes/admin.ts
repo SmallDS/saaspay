@@ -57,9 +57,7 @@ async function adminSettings(env: Env): Promise<Record<string, unknown>> {
     },
     wechat: {
       enabled: value("payment.wechat.enabled", "false") === "true",
-      jsapi_enabled: value("payment.wechat.jsapi_enabled", "false") === "true",
       app_id: value("payment.wechat.app_id"),
-      app_secret_configured: Boolean(rows["payment.wechat.app_secret"]?.value),
       mch_id: value("payment.wechat.mch_id"),
       mch_serial_no: value("payment.wechat.mch_serial_no"),
       api_v3_key_configured: Boolean(rows["payment.wechat.api_v3_key"]?.value),
@@ -114,7 +112,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     const input = await bodyJson<{
       site?: { name?: string; tagline?: string; primary_domain?: string; theme?: Record<string, unknown>; header?: Record<string, unknown>; footer?: Record<string, unknown> };
       alipay?: { enabled?: boolean; app_id?: string; gateway?: string; seller_id?: string; private_key?: string; public_key?: string };
-      wechat?: { enabled?: boolean; jsapi_enabled?: boolean; app_id?: string; app_secret?: string; mch_id?: string; mch_serial_no?: string; api_v3_key?: string; private_key?: string; public_key?: string; public_key_id?: string };
+      wechat?: { enabled?: boolean; app_id?: string; mch_id?: string; mch_serial_no?: string; api_v3_key?: string; private_key?: string; public_key?: string; public_key_id?: string };
       seo?: Record<string, unknown>;
       legal?: Record<string, unknown>;
       custom_code?: Record<string, unknown>;
@@ -143,8 +141,6 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     }
     if (input.wechat) {
       if (typeof input.wechat.enabled === "boolean") writes.push(setSetting(env, "payment.wechat.enabled", String(input.wechat.enabled)));
-      if (typeof input.wechat.jsapi_enabled === "boolean") writes.push(setSetting(env, "payment.wechat.jsapi_enabled", String(input.wechat.jsapi_enabled)));
-      if (typeof input.wechat.app_secret === "string" && input.wechat.app_secret.trim()) writes.push(setSetting(env, "payment.wechat.app_secret", input.wechat.app_secret.trim(), true));
       if (typeof input.wechat.app_id === "string") writes.push(setSetting(env, "payment.wechat.app_id", input.wechat.app_id.trim()));
       if (typeof input.wechat.mch_id === "string") writes.push(setSetting(env, "payment.wechat.mch_id", input.wechat.mch_id.trim()));
       if (typeof input.wechat.mch_serial_no === "string") writes.push(setSetting(env, "payment.wechat.mch_serial_no", input.wechat.mch_serial_no.trim()));

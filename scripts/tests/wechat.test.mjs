@@ -6,16 +6,12 @@ import "./register-typescript.mjs";
 
 const { handlePublic } = await import("../../worker/routes/public.ts");
 const { orderNo: generateOrderNo } = await import("../../worker/http.ts");
-const { getWechatConfig, createWechatJsapiPayment } = await import("../../worker/payment/wechat.ts");
-const { getWechatOpenId } = await import("../../worker/payment/wechat-oauth.ts");
 const { setSetting } = await import("../../worker/db/settings.ts");
-const { encryptSecret } = await import("../../worker/crypto/secrets.ts");
-const { invokeWechatJsapi } = await import("../../src/shared/wechat.ts");
 const keys = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
 const privateKey = Buffer.from(await crypto.subtle.exportKey("pkcs8", keys.privateKey)).toString("base64");
 const origin = "https://shop.example";
 const wxUA = "Mozilla/5.0 iPhone MicroMessenger/8.0";
-const orderNo = "TEST_JSAPI_001";
+const orderNo = "TEST_NATIVE_001";
 
 async function fixture(t) {
   const db = new DatabaseSync(":memory:");
@@ -38,11 +34,11 @@ async function fixture(t) {
     },
   };
   for (const [key, value, encrypted = false] of [
-    ["enabled", "true"], ["jsapi_enabled", "true"], ["app_id", "wx_test"], ["app_secret", "test_app_secret", true],
+    ["enabled", "true"], ["app_id", "wx_test"],
     ["mch_id", "123456"], ["mch_serial_no", "test_serial"], ["api_v3_key", "1".repeat(32), true], ["private_key", privateKey, true],
   ]) await setSetting(env, `payment.wechat.${key}`, value, encrypted);
   db.prepare("INSERT INTO orders(id,order_no,product_id,plan_id,product_name,plan_name,amount_cents,status) VALUES(?,?,?,?,?,?,?,?)")
-    .run("jsapi_order", orderNo, "test_product", "test_plan", "产品", "套餐", 1234, "pending");
+    .run("native_order", orderNo, "test_product", "test_plan", "产品", "套餐", 1234, "pending");
   // Every payment test must explicitly provide its simulated provider response.
   const fetchMock = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected outbound request"); });
   return { db, env, fetchMock };
@@ -55,190 +51,72 @@ function paymentRequest(cookie = "", userAgent = wxUA, body = {}, requestOrigin 
   });
 }
 async function handle(request, env) { return handlePublic(request, env, new URL(request.url)); }
-function cookiePair(response) { return response.headers.get("set-cookie")?.split(";")[0] ?? ""; }
 
-test("generated order numbers fit the WeChat contract and reach every payment mode unchanged", async (t) => {
+test("Native signs server order data and ignores client amount/payer in every browser", async (t) => {
   const { env, db, fetchMock } = await fixture(t);
   const no = generateOrderNo();
   assert.match(no, /^[A-Za-z0-9_|*\-]{6,32}$/);
   db.prepare("UPDATE orders SET order_no=? WHERE order_no=?").run(no, orderNo);
-  const token = await encryptSecret(env, JSON.stringify({ purpose: "wechat-jsapi", appid: "wx_test", openid: "openid", exp: Math.floor(Date.now() / 1000) + 300 }));
-  for (const [ua, mode] of [["Windows Chrome", "native"], ["iPhone Safari", "native"], [wxUA, "jsapi"]]) {
-    fetchMock.mock.mockImplementation(async (url, init) => {
-      assert.equal(new URL(url).pathname, `/v3/pay/transactions/${mode}`);
-      assert.equal(JSON.parse(init.body).out_trade_no, no);
-      return Response.json({ code_url: "weixin://pay/test", prepay_id: "wx_test_prepay" });
-    });
-    const response = await handle(paymentRequest(`__Host-saas_wechat_session=${encodeURIComponent(token)}`, ua, { order_no: no }), env);
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).mode, mode);
-  }
-});
-
-test("legacy oversized order numbers show an actionable error without initiating payment", async (t) => {
-  const { env, db, fetchMock } = await fixture(t);
-  const legacyNo = "ORD20260903120000" + "A".repeat(24);
-  db.prepare("UPDATE orders SET order_no=? WHERE order_no=?").run(legacyNo, orderNo);
-  for (const ua of ["Windows Chrome", "iPhone Safari", wxUA]) {
-    const response = await handle(paymentRequest("", ua, { order_no: legacyNo }), env);
-    assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /订单号.*重新下单/);
-  }
-  assert.equal(fetchMock.mock.callCount(), 0);
-  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
-  assert.equal(db.prepare("SELECT status FROM orders WHERE order_no=?").get(legacyNo).status, "pending");
-});
-
-async function begin(env) {
-  const response = await handle(paymentRequest(), env);
-  assert.equal(response.status, 200);
-  const payment = await response.json();
-  assert.equal(payment.mode, "redirect");
-  const authorize = new URL(payment.redirect_url);
-  assert.equal(authorize.origin, "https://open.weixin.qq.com");
-  assert.equal(authorize.searchParams.get("scope"), "snsapi_base");
-  const callback = new URL(authorize.searchParams.get("redirect_uri"));
-  callback.searchParams.set("state", authorize.searchParams.get("state"));
-  callback.searchParams.set("code", "test_code");
-  return { response, callback, browser: cookiePair(response) };
-}
-
-test("JSAPI signs the server order and client bridge parameters with the merchant RSA key", async (t) => {
-  const { env, fetchMock } = await fixture(t);
+  // Old JSAPI settings/cookies must not re-enable OAuth or affect Native.
+  await setSetting(env, "payment.wechat.jsapi_enabled", "true");
+  await setSetting(env, "payment.wechat.app_secret", "unused-old-secret");
   fetchMock.mock.mockImplementation(async (url, init) => {
-    assert.equal(url, "https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi");
+    assert.equal(url, "https://api.mch.weixin.qq.com/v3/pay/transactions/native");
     const body = JSON.parse(init.body);
-    assert.deepEqual(body.payer, { openid: "authorized_openid" });
-    assert.deepEqual(body.amount, { total: 1234, currency: "CNY" });
+    assert.equal(body.out_trade_no, no);
     assert.equal(body.appid, "wx_test");
     assert.equal(body.mchid, "123456");
-    assert.equal(body.out_trade_no, orderNo);
-    assert.equal(body.notify_url, `${origin}/api/payment/wechat/notify`);
+    assert.equal(body.description, "产品 - 套餐");
+    assert.equal(body.notify_url, origin + "/api/payment/wechat/notify");
+    assert.deepEqual(body.amount, { total: 1234, currency: "CNY" });
+    assert.equal(body.payer, undefined);
+    assert.ok(Date.parse(body.time_expire) > Date.now());
     const auth = Object.fromEntries([...init.headers.authorization.matchAll(/(\w+)="([^"]+)"/g)].map((match) => [match[1], match[2]]));
-    const signed = `POST\n/v3/pay/transactions/jsapi\n${auth.timestamp}\n${auth.nonce_str}\n${init.body}\n`;
+    const signed = `POST\n/v3/pay/transactions/native\n${auth.timestamp}\n${auth.nonce_str}\n${init.body}\n`;
     assert.ok(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", keys.publicKey, Buffer.from(auth.signature, "base64"), new TextEncoder().encode(signed)));
-    return Response.json({ prepay_id: "wx_test_prepay" });
+    return Response.json({ code_url: "weixin://wxpay/bizpayurl?pr=test" });
   });
-  const params = await createWechatJsapiPayment(await getWechatConfig(env), { orderNo, amountCents: 1234, description: "产品", notifyUrl: `${origin}/api/payment/wechat/notify`, openid: "authorized_openid" });
-  assert.equal(params.signType, "RSA");
-  assert.equal(params.package, "prepay_id=wx_test_prepay");
-  assert.match(params.timeStamp, /^\d{10}$/);
-  assert.equal(params.nonceStr.length, 32);
-  const signed = `${params.appId}\n${params.timeStamp}\n${params.nonceStr}\n${params.package}\n`;
-  assert.ok(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", keys.publicKey, Buffer.from(params.paySign, "base64"), new TextEncoder().encode(signed)));
-});
-
-test("OAuth round trip resumes the same order, keeps secrets encrypted, and ignores client payer/amount", async (t) => {
-  const { env, db, fetchMock } = await fixture(t);
-  const { response, callback, browser } = await begin(env);
-  assert.match(response.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=Lax/);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const secret = db.prepare("SELECT value,encrypted FROM settings WHERE key='payment.wechat.app_secret'").get();
-  assert.equal(secret.encrypted, 1);
-  assert.notEqual(secret.value, "test_app_secret");
-  fetchMock.mock.mockImplementation(async (url) => {
-    const target = new URL(url);
-    assert.equal(target.origin, "https://api.weixin.qq.com");
-    assert.equal(target.pathname, "/sns/oauth2/access_token");
-    assert.equal(target.searchParams.get("secret"), "test_app_secret");
-    assert.equal(target.searchParams.get("code"), "test_code");
-    assert.equal(target.searchParams.get("appid"), "wx_test");
-    return Response.json({ openid: "authorized_openid", access_token: "do_not_expose" });
-  });
-  callback.searchParams.set("order_no", "attacker_order");
-  callback.searchParams.set("redirect_uri", "https://attacker.example");
-  const completed = await handle(new Request(callback, { headers: { cookie: browser } }), env);
-  assert.equal(completed.status, 303);
-  assert.equal(completed.headers.get("location"), `${origin}/payment/result?order_no=${orderNo}&pay=wxjsapi`);
-  assert.equal(completed.headers.get("referrer-policy"), "no-referrer");
-  const session = cookiePair(completed);
-  assert.ok(session);
-  assert.doesNotMatch(session, /authorized_openid|do_not_expose|test_app_secret/);
-  fetchMock.mock.mockImplementation(async (url, init) => {
-    assert.equal(new URL(url).pathname, "/v3/pay/transactions/jsapi");
-    const body = JSON.parse(init.body);
-    assert.equal(body.payer.openid, "authorized_openid");
-    assert.equal(body.amount.total, 1234);
-    return Response.json({ prepay_id: "wx_prepay" });
-  });
-  const paidRequest = await handle(paymentRequest(session, wxUA, { openid: "attacker", amount_cents: 1 }), env);
-  assert.equal((await paidRequest.json()).mode, "jsapi");
-  assert.equal(db.prepare("SELECT status FROM orders WHERE order_no=?").get(orderNo).status, "pending");
-  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
-  const replay = await handle(new Request(callback, { headers: { cookie: browser } }), env);
-  assert.match(replay.headers.get("location"), /wechat_auth=expired$/);
-  assert.equal(fetchMock.mock.callCount(), 2);
-});
-
-test("OAuth rejects missing/wrong browser, expired state, denied authorization and changed AppID", async (t) => {
-  const { env, db, fetchMock } = await fixture(t);
-  const flow = await begin(env);
-  for (const cookie of ["", "__Host-saas_wechat_oauth=" + "0".repeat(32)]) {
-    const result = await handle(new Request(flow.callback, { headers: { cookie } }), env);
-    assert.match(result.headers.get("location"), /wechat_auth=expired$/);
+  for (const ua of ["Windows Chrome", "iPhone Safari", "Android Chrome", wxUA]) {
+    const response = await handle(paymentRequest("__Host-saas_wechat_session=old-cookie", ua, { order_no: no, amount: 1, openid: "forged", payer: { openid: "forged" } }), env);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, mode: "native", code_url: "weixin://wxpay/bizpayurl?pr=test" });
+    assert.equal(response.headers.get("set-cookie"), null);
   }
-  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 1);
-  db.exec("UPDATE wechat_oauth_states SET expires_at=1");
-  const expired = await handle(new Request(flow.callback, { headers: { cookie: flow.browser } }), env);
-  assert.match(expired.headers.get("location"), /wechat_auth=expired$/);
-  const denied = await begin(env);
-  denied.callback.searchParams.delete("code");
-  const deniedResult = await handle(new Request(denied.callback, { headers: { cookie: denied.browser } }), env);
-  assert.match(deniedResult.headers.get("location"), /wechat_auth=denied$/);
-  const changed = await begin(env);
-  await setSetting(env, "payment.wechat.app_id", "wx_changed");
-  const changedResult = await handle(new Request(changed.callback, { headers: { cookie: changed.browser } }), env);
-  assert.match(changedResult.headers.get("location"), /wechat_auth=expired$/);
+  assert.equal(db.prepare("SELECT payment_provider FROM orders WHERE order_no=?").get(no).payment_provider, "wechat");
+  assert.equal(db.prepare("SELECT count(*) n FROM orders").get().n, 1);
+  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
+});
+
+test("legacy oversized order numbers fail before making provider requests", async (t) => {
+  const { env, fetchMock } = await fixture(t);
+  const response = await handle(paymentRequest("", wxUA, { order_no: "ORD20260903120000" + "A".repeat(24) }), env);
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /订单号.*重新下单/);
   assert.equal(fetchMock.mock.callCount(), 0);
 });
 
-test("OAuth failures return a retry page without leaking provider responses", async (t) => {
+test("Native uses the configured notification domain without OAuth redirects", async (t) => {
   const { env, fetchMock } = await fixture(t);
-  for (const payload of [{ errcode: 40029, errmsg: "secret_provider_error" }, {}, { openid: 123 }]) {
-    const flow = await begin(env);
-    fetchMock.mock.mockImplementation(async () => Response.json(payload));
-    const response = await handle(new Request(flow.callback, { headers: { cookie: flow.browser } }), env);
-    assert.match(response.headers.get("location"), /wechat_auth=failed$/);
-    assert.equal(response.headers.get("set-cookie"), null);
-    assert.doesNotMatch(response.headers.get("location"), /secret_provider_error/);
-  }
-  await setSetting(env, "payment.wechat.app_secret", "");
-  const missing = await handle(paymentRequest(), env);
-  assert.match((await missing.json()).error, /公众号 AppID 和 AppSecret/);
-});
-
-test("OpenID sessions reject tampering, expiration, wrong purpose and different AppID", async (t) => {
-  const { env } = await fixture(t);
-  const valid = { purpose: "wechat-jsapi", appid: "wx_test", openid: "openid", exp: Math.floor(Date.now() / 1000) + 300 };
-  for (const override of [{ exp: 0 }, { appid: "wx_other" }, { purpose: "other" }, { openid: 123 }]) {
-    const token = await encryptSecret(env, JSON.stringify({ ...valid, ...override }));
-    assert.equal(await getWechatOpenId(paymentRequest(`__Host-saas_wechat_session=${encodeURIComponent(token)}`), env, "wx_test"), null);
-  }
-  assert.equal(await getWechatOpenId(paymentRequest("__Host-saas_wechat_session=forged"), env, "wx_test"), null);
-  const token = await encryptSecret(env, JSON.stringify(valid));
-  assert.equal(await getWechatOpenId(paymentRequest(`__Host-saas_wechat_session=${encodeURIComponent(token)}`), env, "wx_test"), "openid");
-});
-
-test("desktop and mobile browsers use Native; WeChat also uses Native when JSAPI is off", async (t) => {
-  const { env, fetchMock } = await fixture(t);
-  for (const [ua, enabled] of [["iPhone Safari", "true"], ["Android Chrome", "true"], ["iPhone Safari", "false"], ["Windows Chrome", "true"], [wxUA, "false"]]) {
-    await setSetting(env, "payment.wechat.jsapi_enabled", enabled);
-    fetchMock.mock.mockImplementation(async (url) => {
-      assert.equal(new URL(url).pathname, "/v3/pay/transactions/native");
-      return Response.json({ code_url: "weixin://pay/test" });
-    });
-    const response = await handle(paymentRequest("", ua), env);
-    assert.deepEqual(await response.json(), { ok: true, mode: "native", code_url: "weixin://pay/test" });
-  }
-});
-
-test("canonical domain is reached before OAuth cookies are created", async (t) => {
-  const { env, db, fetchMock } = await fixture(t);
-  await setSetting(env, "site.primary_domain", origin);
-  const response = await handle(paymentRequest("", wxUA, {}, "https://alias.example"), env);
-  assert.equal((await response.json()).redirect_url, `${origin}/payment/result?order_no=${orderNo}&pay=wxjsapi`);
+  await setSetting(env, "site.primary_domain", "https://canonical.example/");
+  fetchMock.mock.mockImplementation(async (url, init) => {
+    assert.equal(new URL(url).pathname, "/v3/pay/transactions/native");
+    assert.equal(JSON.parse(init.body).notify_url, "https://canonical.example/api/payment/wechat/notify");
+    return Response.json({ code_url: "weixin://pay/test" });
+  });
+  const response = await handle(paymentRequest(), env);
+  assert.equal((await response.json()).mode, "native");
   assert.equal(response.headers.get("set-cookie"), null);
-  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
+});
+
+test("disabled or incomplete Native settings cannot initiate payment", async (t) => {
+  const { env, fetchMock } = await fixture(t);
+  await setSetting(env, "payment.wechat.enabled", "false");
+  assert.equal((await handle(paymentRequest(), env)).status, 409);
+  await setSetting(env, "payment.wechat.enabled", "true");
+  await setSetting(env, "payment.wechat.app_id", "");
+  const response = await handle(paymentRequest(), env);
+  assert.equal(response.status, 502);
+  assert.match((await response.json()).error, /配置不完整/);
   assert.equal(fetchMock.mock.callCount(), 0);
 });
 
@@ -256,7 +134,7 @@ test("paid/closed orders and cross-origin requests never initiate a payment", as
 
 test("browser payments without Origin accept verified same-origin Referer or Fetch Metadata", async (t) => {
   const { env, fetchMock } = await fixture(t);
-  for (const [ua, mode] of [["iPhone Safari", "native"], ["Windows Chrome", "native"], [wxUA, "redirect"]]) {
+  for (const [ua, mode] of [["iPhone Safari", "native"], ["Windows Chrome", "native"], [wxUA, "native"]]) {
     for (const headers of [{ referer: origin + "/checkout?plan=test" }, { "sec-fetch-site": "same-origin" }, { referer: origin + "/payment/result", "sec-fetch-site": "same-origin" }]) {
       const request = paymentRequest("", ua);
       request.headers.delete("origin");
@@ -270,7 +148,7 @@ test("browser payments without Origin accept verified same-origin Referer or Fet
       assert.equal((await response.json()).mode, mode);
     }
   }
-  assert.equal(fetchMock.mock.callCount(), 6);
+  assert.equal(fetchMock.mock.callCount(), 9);
 });
 
 test("payment origin fallback rejects foreign, opaque, conflicting and unverifiable sources", async (t) => {
@@ -334,32 +212,64 @@ test("trusted payment domains require exact matching and cannot be supplied thro
   assert.equal(fetchMock.mock.callCount(), 0);
 });
 
-test("invalid JSAPI provider responses fail without creating bridge parameters", async (t) => {
-  const { env, fetchMock } = await fixture(t);
-  for (const payload of [{}, { prepay_id: 42 }, { code: "APPID_MCHID_NOT_MATCH", message: "AppID未绑定" }]) {
+
+test("invalid Native responses do not become unusable QR codes and allow the same order to retry", async (t) => {
+  const { env, db, fetchMock } = await fixture(t);
+  for (const payload of [{}, { code_url: 42 }, { code_url: {} }, { code_url: "   " }, { code_url: "https://other.example" }]) {
     fetchMock.mock.mockImplementation(async () => Response.json(payload));
-    await assert.rejects(createWechatJsapiPayment(await getWechatConfig(env), { orderNo, amountCents: 1234, description: "产品", notifyUrl: `${origin}/notify`, openid: "openid" }));
+    const response = await handle(paymentRequest(), env);
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).code_url, undefined);
   }
+  fetchMock.mock.mockImplementation(async () => Response.json({ code: "APPID_MCHID_NOT_MATCH", message: "AppID未绑定" }, { status: 400 }));
+  const denied = await handle(paymentRequest(), env);
+  assert.match((await denied.json()).error, /AppID未绑定/);
+  fetchMock.mock.mockImplementation(async () => Response.json({ code_url: "weixin://pay/retry" }));
+  assert.equal((await handle(paymentRequest(), env)).status, 200);
+  assert.equal(db.prepare("SELECT count(*) n FROM orders").get().n, 1);
+  assert.equal(db.prepare("SELECT status FROM orders WHERE order_no=?").get(orderNo).status, "pending");
 });
 
-function browserFixture(t, bridge) {
-  const previous = new Map(["window", "document", "navigator"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const document = new EventTarget();
-  const window = { WeixinJSBridge: bridge, setTimeout, clearTimeout };
-  for (const [name, value] of Object.entries({ window, document, navigator: { userAgent: wxUA } })) Object.defineProperty(globalThis, name, { value, configurable: true });
-  t.after(() => { for (const [name, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; } });
-  return { window, document };
-}
+test("Native polling confirms the provider amount before marking paid and skips paid orders", async (t) => {
+  const { env, db, fetchMock } = await fixture(t);
+  db.prepare("UPDATE orders SET payment_provider='wechat' WHERE order_no=?").run(orderNo);
+  fetchMock.mock.mockImplementation(async (url) => {
+    assert.match(url, /transactions\/out-trade-no\//);
+    return Response.json({ trade_state: "SUCCESS", transaction_id: "wx_transaction", amount: { total: 1 } });
+  });
+  const request = () => new Request(origin + "/api/orders/" + orderNo);
+  assert.equal((await (await handle(request(), env)).json()).order.status, "pending");
+  fetchMock.mock.mockImplementation(async () => Response.json({ trade_state: "SUCCESS", transaction_id: "wx_transaction", amount: { total: 1234 } }));
+  assert.equal((await (await handle(request(), env)).json()).order.status, "paid");
+  assert.equal(db.prepare("SELECT transaction_id FROM orders WHERE order_no=?").get(orderNo).transaction_id, "wx_transaction");
+  const calls = fetchMock.mock.callCount();
+  assert.equal((await (await handle(request(), env)).json()).order.status, "paid");
+  assert.equal(fetchMock.mock.callCount(), calls);
+});
 
-test("JSBridge handles submit, cancel, failure and delayed readiness", async (t) => {
-  const { window, document } = browserFixture(t);
-  const params = { appId: "wx_test", timeStamp: "1234567890", nonceStr: "nonce", package: "prepay_id=test", signType: "RSA", paySign: "signature" };
-  const waiting = invokeWechatJsapi(params);
-  window.WeixinJSBridge = { invoke(method, input, callback) { assert.equal(method, "getBrandWCPayRequest"); assert.equal(input, params); callback({ err_msg: "get_brand_wcpay_request:ok" }); } };
-  document.dispatchEvent(new Event("WeixinJSBridgeReady"));
-  assert.equal(await waiting, "submitted");
-  window.WeixinJSBridge.invoke = (_, __, callback) => callback({ err_msg: "get_brand_wcpay_request:cancel" });
-  assert.equal(await invokeWechatJsapi(params), "cancelled");
-  window.WeixinJSBridge.invoke = (_, __, callback) => callback({ err_msg: "get_brand_wcpay_request:fail" });
-  await assert.rejects(invokeWechatJsapi(params), /微信支付未完成/);
+test("signed encrypted Native notifications reject tampering and wrong amounts, then confirm payment idempotently", async (t) => {
+  const { env, db } = await fixture(t);
+  const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64");
+  await setSetting(env, "payment.wechat.public_key", publicKey);
+  await setSetting(env, "payment.wechat.public_key_id", "PUB_KEY_ID_TEST");
+  db.prepare("UPDATE orders SET payment_provider='wechat' WHERE order_no=?").run(orderNo);
+  const aesKey = await crypto.subtle.importKey("raw", new TextEncoder().encode("1".repeat(32)), "AES-GCM", false, ["encrypt"]);
+  async function notification(amount) {
+    const resource = { appid: "wx_test", mchid: "123456", out_trade_no: orderNo, transaction_id: "wx_notify_transaction", amount: { total: amount, currency: "CNY" } };
+    const nonce = "123456789012";
+    const associated_data = "transaction";
+    const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: new TextEncoder().encode(nonce), additionalData: new TextEncoder().encode(associated_data) }, aesKey, new TextEncoder().encode(JSON.stringify(resource)));
+    const body = JSON.stringify({ event_type: "TRANSACTION.SUCCESS", resource: { nonce, associated_data, ciphertext: Buffer.from(encrypted).toString("base64") } });
+    const timestamp = String(Math.floor(Date.now()/1000));
+    const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keys.privateKey, new TextEncoder().encode(`${timestamp}\n${nonce}\n${body}\n`));
+    return new Request(origin + "/api/payment/wechat/notify", { method: "POST", body, headers: { "wechatpay-timestamp": timestamp, "wechatpay-nonce": nonce, "wechatpay-serial": "PUB_KEY_ID_TEST", "wechatpay-signature": Buffer.from(signature).toString("base64") } });
+  }
+  const tampered = await notification(1234);
+  tampered.headers.set("wechatpay-signature", Buffer.alloc(256).toString("base64"));
+  assert.equal((await handle(tampered, env)).status, 500);
+  assert.equal((await handle(await notification(1), env)).status, 500);
+  assert.equal(db.prepare("SELECT status FROM orders WHERE order_no=?").get(orderNo).status, "pending");
+  for (let i = 0; i < 2; i++) assert.equal((await handle(await notification(1234), env)).status, 200);
+  const order = db.prepare("SELECT status,transaction_id,payment_provider FROM orders WHERE order_no=?").get(orderNo);
+  assert.deepEqual({ ...order }, { status: "paid", transaction_id: "wx_notify_transaction", payment_provider: "wechat" });
 });

@@ -1,11 +1,9 @@
 import { bad, bodyJson, classifyContactInfo, id, json, nowIso, orderNo, parseCnyCents, paymentSuccess, recordValue, webhookContactFields } from "../http";
 import { getSettingValue } from "../db/settings";
 import { assertSameOrigin } from "../auth/session";
-import { getWechatOpenId, handleWechatOAuthCallback, startWechatOAuth } from "../payment/wechat-oauth";
 import { getLegalSettings, getSeoSettings } from "../seo";
 import { createPagePayForm, createWapPayForm, verifyAlipayNotify } from "../payment/alipay";
 import {
-  createWechatJsapiPayment,
   createWechatNativePayment,
   decryptWechatResource,
   getWechatConfig,
@@ -42,9 +40,6 @@ function wechatFailure(message: string): Response {
 
 export async function handlePublic(request: Request, env: Env, url: URL): Promise<Response | null> {
   const pathname = url.pathname;
-  if (pathname === "/api/payment/wechat/oauth/callback" && request.method === "GET") {
-    return handleWechatOAuthCallback(request, env, url);
-  }
   if (pathname === "/api/health") return json({ ok: true, service: "saas-store-cf", time: nowIso() });
   if (pathname === "/api/public/site" && request.method === "GET") {
     const [name, tagline, themeRaw, headerRaw, footerRaw, seo, legal] = await Promise.all([
@@ -243,22 +238,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     const origin = configuredDomain || url.origin;
     const description = `${order.product_name} - ${order.plan_name}`;
     const notifyUrl = `${origin}/api/payment/wechat/notify`;
-    const isWechat = /micromessenger/i.test(request.headers.get("user-agent") ?? "");
     try {
-      if (isWechat && config.jsapiEnabled) {
-        const paymentOrigin = new URL(origin).origin;
-        if (!paymentOrigin.startsWith("https://")) return bad("微信内支付需要使用 HTTPS 域名", 409);
-        // 先回到主域名，再设置授权 Cookie，避免跨域名回调丢失浏览器凭据。
-        if (paymentOrigin !== url.origin) {
-          const target = new URL("/payment/result", paymentOrigin);
-          target.search = new URLSearchParams({ order_no: order.order_no, pay: "wxjsapi" }).toString();
-          return json({ ok: true, mode: "redirect", redirect_url: target.href });
-        }
-        const openid = await getWechatOpenId(request, env, config.appId);
-        if (!openid) return await startWechatOAuth(request, env, config, order.order_no);
-        const params = await createWechatJsapiPayment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl, openid });
-        return json({ ok: true, mode: "jsapi", pay_params: params });
-      }
       const payment = await createWechatNativePayment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl });
       return json({ ok: true, mode: "native", code_url: payment.code_url });
     } catch (error) {

@@ -10,9 +10,7 @@ const ORDER_EXPIRY_MINUTES = 30;
 
 export type WechatConfig = {
   enabled: boolean;
-  jsapiEnabled: boolean;
   appId: string;
-  appSecret: string;
   mchId: string;
   mchSerialNo: string;
   apiV3Key: string;
@@ -32,9 +30,7 @@ export class WechatPayError extends Error {
 export async function getWechatConfig(env: Env): Promise<WechatConfig> {
   return {
     enabled: (await getSettingValue(env, "payment.wechat.enabled", "false")) === "true",
-    jsapiEnabled: (await getSettingValue(env, "payment.wechat.jsapi_enabled", "false")) === "true",
     appId: await getSettingValue(env, "payment.wechat.app_id"),
-    appSecret: await getSettingValue(env, "payment.wechat.app_secret"),
     mchId: await getSettingValue(env, "payment.wechat.mch_id"),
     mchSerialNo: await getSettingValue(env, "payment.wechat.mch_serial_no"),
     apiV3Key: await getSettingValue(env, "payment.wechat.api_v3_key"),
@@ -218,56 +214,12 @@ export async function createWechatNativePayment(
     notify_url: input.notifyUrl,
     amount: { total: input.amountCents, currency: "CNY" },
   });
-  const codeUrl = String(result.data?.code_url ?? "");
-  if (!result.ok || !codeUrl) {
+  const codeUrl = result.data?.code_url;
+  if (!result.ok || typeof codeUrl !== "string" || !codeUrl.startsWith("weixin://")) {
     const error = wechatError(result.data);
     throw new WechatPayError(error.code, error.message || error.code || "微信支付下单失败");
   }
   return { code_url: codeUrl };
-}
-
-export type WechatJsapiParams = {
-  appId: string;
-  timeStamp: string;
-  nonceStr: string;
-  package: string;
-  signType: "RSA";
-  paySign: string;
-};
-
-export async function createWechatJsapiPayment(
-  config: WechatConfig,
-  input: { orderNo: string; amountCents: number; description: string; notifyUrl: string; openid: string },
-): Promise<WechatJsapiParams> {
-  ensureWechatConfigured(config);
-  if (!config.jsapiEnabled) throw new Error("微信内支付未启用");
-  if (!input.openid) throw new Error("请先完成微信网页授权");
-  const result = await wechatRequest(config, "POST", "/v3/pay/transactions/jsapi", {
-    appid: config.appId,
-    mchid: config.mchId,
-    description: input.description.slice(0, 127),
-    out_trade_no: input.orderNo,
-    time_expire: paymentExpiry(),
-    notify_url: input.notifyUrl,
-    amount: { total: input.amountCents, currency: "CNY" },
-    payer: { openid: input.openid },
-  });
-  const prepayId = result.data?.prepay_id;
-  if (!result.ok || typeof prepayId !== "string" || !prepayId) {
-    const error = wechatError(result.data);
-    throw new WechatPayError(error.code, error.message || error.code || "微信内支付下单失败");
-  }
-  const params = {
-    appId: config.appId,
-    timeStamp: Math.floor(Date.now() / 1000).toString(),
-    nonceStr: randomNonce(),
-    package: `prepay_id=${prepayId}`,
-    signType: "RSA" as const,
-  };
-  const key = await importRsassaPrivateKey(config.privateKey);
-  const message = `${params.appId}\n${params.timeStamp}\n${params.nonceStr}\n${params.package}\n`;
-  const paySign = bytesToBase64(new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, toBytes(message))));
-  return { ...params, paySign };
 }
 
 async function queryWechatTrade(config: WechatConfig, orderNo: string): Promise<{ state: string; transactionId: string; totalCents: number | null }> {

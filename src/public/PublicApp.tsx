@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Card, Form, Input, Modal, Radio, Result, Skeleton, Space, Spin, Tag, message } from "antd";
 import { Render, type Data } from "@puckeditor/core";
 import QRCode from "qrcode";
 import { api, money } from "../shared/api";
-import { invokeWechatJsapi, isWechatBrowser, type WechatPaymentResponse } from "../shared/wechat";
+import { isWechatBrowser, type WechatPaymentResponse } from "../shared/wechat";
 import { defaultPageData, pageConfig, type StorefrontAsset, type StorefrontPlan, type StorefrontProduct } from "../editor/config";
 import { defaultFooter, defaultHeader, defaultLegal, defaultSeo, defaultTheme, safeSiteHref, type SiteFooterSettings, type SiteHeaderSettings, type SiteLegalSettings, type SiteSeoSettings, type SiteThemeSettings } from "../editor/site";
 
@@ -32,11 +32,11 @@ function submitAlipayPayment(payment: AlipayPaymentForm): void {
   form.submit();
 }
 
-async function renderWechatQr(codeUrl: string): Promise<string | null> {
+async function renderWechatQr(codeUrl: string): Promise<string> {
   try {
     return await QRCode.toDataURL(codeUrl, { width: 260, margin: 1 });
   } catch {
-    return null;
+    throw new Error("支付二维码生成失败，请点击继续支付重试");
   }
 }
 
@@ -251,17 +251,12 @@ function CheckoutPage() {
       if (payMethod === "wechat") {
         sessionStorage.setItem(PENDING_WECHAT_ORDER_KEY, created.order.order_no);
         setPendingWechatOrder(created.order.order_no);
-        // 微信内统一在 /payment/ 目录调起支付，授权往返后继续使用同一订单。
-        if (isWechatBrowser()) {
-          location.href = "/payment/result?order_no=" + encodeURIComponent(created.order.order_no) + "&pay=wxjsapi";
-          return;
-        }
         const payment = await api<WechatPaymentResponse>("/api/payment/wechat/create", {
           method: "POST",
           body: JSON.stringify({ order_no: created.order.order_no }),
         });
         if (payment.mode === "native" && payment.code_url) {
-          setWechatPay({ orderNo: created.order.order_no, qrImage: (await renderWechatQr(payment.code_url)) ?? "" });
+          setWechatPay({ orderNo: created.order.order_no, qrImage: await renderWechatQr(payment.code_url) });
           return;
         }
         message.error("微信支付下单失败");
@@ -284,6 +279,8 @@ function CheckoutPage() {
   ) : wechatPay ? (
     <div className="wechat-pay-panel">
       <h2>微信扫码支付</h2>
+      <p>{plan.product_name} · {plan.name} · {money(plan.amount_cents)}</p>
+      <p className="muted">订单号：{wechatPay.orderNo}</p>
       {wechatPay.qrImage ? <img src={wechatPay.qrImage} alt="微信支付二维码" /> : <Spin />}
       <p>请使用微信扫一扫完成支付，支付成功后页面会自动跳转。</p>
       <Button onClick={() => setWechatPay(null)}>返回重新选择支付方式</Button>
@@ -304,7 +301,7 @@ function CheckoutPage() {
               closable
               style={{ marginBottom: 16 }}
               message="你有进行中的微信支付订单"
-              action={<Button size="small" type="primary" href={"/payment/result?order_no=" + encodeURIComponent(pendingWechatOrder)}>查看支付结果</Button>}
+              action={<Button size="small" type="primary" href={"/payment/result?order_no=" + encodeURIComponent(pendingWechatOrder) + "&pay=wechat"}>继续支付 / 查看结果</Button>}
               onClose={() => { sessionStorage.removeItem(PENDING_WECHAT_ORDER_KEY); setPendingWechatOrder(""); }}
             />
           ) : null}
@@ -336,11 +333,11 @@ function CheckoutPage() {
             >
               <Input maxLength={254} placeholder="请输入手机号或邮箱" />
             </Form.Item>
-            <Form.Item label="支付方式" extra={!methods.alipay && !methods.wechat ? "商家暂未开通在线支付" : payMethod === "wechat" ? (isWechatBrowser() ? "将在微信内完成支付" : "将显示支付二维码，请使用微信扫一扫完成支付") : undefined}>
+            <Form.Item label="支付方式" extra={!methods.alipay && !methods.wechat ? "商家暂未开通在线支付" : payMethod === "wechat" ? "将显示支付二维码，请使用微信扫一扫完成支付" : undefined}>
               {methods.alipay || methods.wechat ? (
                 <Radio.Group value={payMethod} onChange={(event) => setPayMethod(event.target.value)}>
                   {methods.alipay ? <Radio value="alipay">支付宝</Radio> : null}
-                  {methods.wechat ? <Radio value="wechat">微信支付</Radio> : null}
+                  {methods.wechat ? <Radio value="wechat">微信扫码支付</Radio> : null}
                 </Radio.Group>
               ) : <span className="muted">商家暂未开通在线支付</span>}
             </Form.Item>
@@ -378,21 +375,15 @@ function GlobalFooter({ site }: { site: Site }) {
 function PaymentResult() {
   const orderNo = new URLSearchParams(location.search).get("order_no") ?? "";
   const payParam = useMemo(() => new URLSearchParams(location.search).get("pay") ?? "", []);
-  const [wechatNotice, setWechatNotice] = useState(() => {
-    const auth = new URLSearchParams(location.search).get("wechat_auth");
-    if (auth === "expired") return "微信授权已过期，请重新发起支付。";
-    if (auth === "denied") return "微信授权未完成，可以点击继续支付重试。";
-    if (auth === "failed") return "微信授权失败，请重试；若仍失败，请联系商家检查公众号配置。";
-    return "";
-  });
+  const [wechatNotice, setWechatNotice] = useState("");
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
-  const autoOpened = useRef(false);
-  const provider = payParam === "wxjsapi" ? "wechat" : order?.payment_provider ?? "alipay";
+  // 旧版支付结果链接仍可继续同一订单，但统一显示 Native 二维码。
+  const provider = ["wechat", "wxjsapi"].includes(payParam) ? "wechat" : order?.payment_provider ?? "alipay";
 
   useEffect(() => {
     let cancelled = false;
@@ -424,23 +415,8 @@ function PaymentResult() {
     setRetrying(true);
     setWechatNotice("");
     sessionStorage.setItem(PENDING_WECHAT_ORDER_KEY, orderNo);
-    const cleanUrl = new URL(location.href);
-    cleanUrl.searchParams.delete("pay");
-    cleanUrl.searchParams.delete("wechat_auth");
-    history.replaceState(null, "", cleanUrl.href);
     try {
       const payment = await api<WechatPaymentResponse>("/api/payment/wechat/create", { method: "POST", body: JSON.stringify({ order_no: orderNo }) });
-      if (payment.mode === "redirect") {
-        location.href = payment.redirect_url;
-        return;
-      }
-      if (payment.mode === "jsapi") {
-        const outcome = await invokeWechatJsapi(payment.pay_params);
-        if (outcome === "cancelled") setWechatNotice("你已取消支付，可以点击继续支付重试。");
-        // JSBridge 的结果只触发查单；只有服务端确认后才展示支付成功。
-        setRefreshToken((value) => value + 1);
-        return;
-      }
       if (payment.mode === "native" && payment.code_url) {
         setQrImage(await renderWechatQr(payment.code_url));
         setQrOpen(true);
@@ -453,15 +429,6 @@ function PaymentResult() {
       setRetrying(false);
     }
   }
-
-  useEffect(() => {
-    if (autoOpened.current) return;
-    if (!order || order.status !== "pending") return;
-    if (payParam !== "wxjsapi") return;
-    if (provider !== "wechat") return;
-    autoOpened.current = true;
-    void openWechatPayment();
-  }, [order, payParam]);
 
   async function continuePayment() {
     if (!orderNo) return;
@@ -480,7 +447,6 @@ function PaymentResult() {
   function refresh() { setLoading(true); setRefreshToken((value) => value + 1); }
 
   if (loading) return <div className="center"><Skeleton active /></div>;
-  if ((!orderNo || !order) && wechatNotice) return <Result status="warning" title="微信授权未完成" subTitle={wechatNotice} extra={<Button href="/">返回首页</Button>} />;
   if (!orderNo || !order) return <Result status="404" title="未找到订单" extra={<Button href="/">返回首页</Button>} />;
   if (order.status === "paid" && (order.refunded_cents ?? 0) > 0) return <Result status="info" title="订单已部分退款" subTitle={order.product_name + " · 已退款 " + money(order.refunded_cents ?? 0)} extra={<Button type="primary" href="/">返回首页</Button>} />;
   if (order.status === "paid") return <Result status="success" title="支付成功" subTitle={order.product_name + " · " + order.plan_name + " · " + money(order.amount_cents)} extra={<Button type="primary" href="/">返回首页</Button>} />;
@@ -491,7 +457,7 @@ function PaymentResult() {
     <Result
       status="info"
       title="等待支付结果"
-      subTitle={provider === "wechat" && !isWechatBrowser() ? "完成支付后页面会自动更新；点击继续支付可显示微信支付二维码。" : "完成支付后页面会自动更新；如果尚未支付，可以继续打开" + (provider === "wechat" ? "微信" : "支付宝") + "收银台。"}
+      subTitle={provider === "wechat" ? "完成支付后页面会自动更新；点击继续支付可显示微信支付二维码。" : "完成支付后页面会自动更新；如果尚未支付，可以继续打开支付宝收银台。"}
       extra={<Space><Tag>{order.order_no}</Tag><Button type="primary" loading={retrying} onClick={() => void continuePayment()}>继续支付</Button><Button onClick={refresh}>刷新</Button><Button href="/">返回首页</Button></Space>}
     />
     <WechatQrModal open={qrOpen} qrImage={qrImage} onClose={() => setQrOpen(false)} />
