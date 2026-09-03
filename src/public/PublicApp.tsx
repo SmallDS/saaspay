@@ -3,6 +3,7 @@ import { Alert, Button, Card, Form, Input, Modal, Radio, Result, Skeleton, Space
 import { Render, type Data } from "@puckeditor/core";
 import QRCode from "qrcode";
 import { api, money } from "../shared/api";
+import { getPageHeading } from "../shared/page-heading";
 import { isWechatBrowser, type WechatPaymentResponse } from "../shared/wechat";
 import { defaultPageData, pageConfig, type StorefrontAsset, type StorefrontPlan, type StorefrontProduct } from "../editor/config";
 import { defaultFooter, defaultHeader, defaultLegal, defaultSeo, defaultTheme, safeSiteHref, type SiteFooterSettings, type SiteHeaderSettings, type SiteLegalSettings, type SiteSeoSettings, type SiteThemeSettings } from "../editor/site";
@@ -54,13 +55,13 @@ function mergeSite(incoming: Partial<Site>): Site {
   };
 }
 
-export function PublicApp() {
+export function PublicApp({ initialPageHeading = "" }: { initialPageHeading?: string }) {
   if (location.pathname === "/checkout") return <CheckoutPage />;
   if (location.pathname === "/payment/result") return <PaymentResult />;
-  return <Storefront />;
+  return <Storefront initialPageHeading={initialPageHeading} />;
 }
 
-function Storefront() {
+function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
   const [loading, setLoading] = useState(true);
   const [site, setSite] = useState<Site>(initialSite);
   const [products, setProducts] = useState<StorefrontProduct[]>([]);
@@ -129,17 +130,21 @@ function Storefront() {
     location.href = "/checkout?plan_id=" + encodeURIComponent(planId);
   }
 
-  if (loading) return <div className="site-loading"><Skeleton active paragraph={{ rows: 8 }} /></div>;
+  if (loading) return <main className="site-loading">{initialPageHeading ? <h1>{initialPageHeading}</h1> : null}<Skeleton active paragraph={{ rows: 8 }} /></main>;
 
   let data: Data = defaultPageData;
-  if (page?.published_json) {
-    try { data = JSON.parse(page.published_json) as Data; } catch { data = defaultPageData; }
+  if (page) {
+    data = { root: { props: {} }, content: [] };
+    try {
+      const published = JSON.parse(page.published_json) as Data | null;
+      if (published && Array.isArray(published.content)) data = published;
+    } catch { /* 已发布内容损坏时仍展示该页面标题。 */ }
   }
 
   return (
     <div className="public-site">
       <GlobalHeader site={site} />
-      {slug !== "home" && !page ? <Result status="404" title="页面不存在" subTitle="这个页面尚未发布。" extra={<Button type="primary" href="/">返回首页</Button>} /> : <Render config={pageConfig} data={data} metadata={{ products, plans, assets, onBuy: buy }} />}
+      {slug !== "home" && !page ? <Result status="404" title="页面不存在" subTitle="这个页面尚未发布。" extra={<Button type="primary" href="/">返回首页</Button>} /> : <Render config={pageConfig} data={data} metadata={{ products, plans, assets, onBuy: buy, pageHeading: getPageHeading(data, page?.title || site.name) }} />}
       <GlobalFooter site={site} />
     </div>
   );

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Config, Data } from "@puckeditor/core";
 import { Button, Card, Empty, Tag } from "antd";
 import { money } from "../shared/api";
+import { headingText, type PageHeading } from "../shared/page-heading";
 
 export type StorefrontPlan = {
   id: string;
@@ -37,6 +38,7 @@ export type StorefrontMetadata = {
   assets?: StorefrontAsset[];
   buyingPlanId?: string | null;
   onBuy?: (planId: string) => void | Promise<void>;
+  pageHeading?: PageHeading;
 };
 
 type PipeItem = { left: string; middle: string; right: string };
@@ -135,6 +137,15 @@ function BuyButton({ plan, metadata }: { plan: StorefrontPlan; metadata: Storefr
 }
 
 export const pageConfig: Config<PageProps> = {
+  root: {
+    render: ({ children, puck }) => {
+      const heading = (puck.metadata as StorefrontMetadata).pageHeading;
+      return <>
+        {heading && !heading.fromHero ? <section className="block hero-block"><div className="container"><h1>{heading.title}</h1></div></section> : null}
+        {children}
+      </>;
+    },
+  },
   categories: {
     基础: { title: "基础", components: ["Hero", "Text", "Notice", "Image", "Gallery", "Divider", "Spacer"] },
     营销: { title: "营销", components: ["Features", "IconList", "Steps", "Timeline", "Team", "Stats", "LogoCloud", "Testimonials", "FAQ", "Video", "Embed", "CTA", "Contact"] },
@@ -158,7 +169,7 @@ export const pageConfig: Config<PageProps> = {
           <div className="container hero-inner">
             <div className="hero-copy">
               {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
-              <h1>{title}</h1>
+              {headingText(title) ? <h1>{headingText(title)}</h1> : null}
               <p>{description}</p>
               {buttonText ? <Button type="primary" size="large" href={safeHref(buttonHref)}>{buttonText}</Button> : null}
             </div>

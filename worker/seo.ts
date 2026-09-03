@@ -108,9 +108,13 @@ export function buildSeoHeadTags(meta: SeoPageMeta, options: { origin: string; s
   return tags.filter(Boolean).join("\n");
 }
 
-// 将 SEO 标签注入 SPA 的 index.html：<title> 整体替换，其余插入 </head> 前、自定义代码插入 </body> 前。
-export function injectSeoIntoHtml(html: string, headTags: string, customBody: string): string {
+// 首屏标题放在 React 根节点中，对所有访客可见，客户端接管后由实际页面替换。
+export function injectSeoIntoHtml(html: string, headTags: string, customBody: string, pageHeading = ""): string {
   let output = html;
+  if (pageHeading) {
+    output = output.replace(/<div\b([^>]*\bid=["']root["'][^>]*)>\s*<\/div>/i,
+      (_match, attributes: string) => `<div${attributes}><main class="site-loading"><h1 data-page-heading>${escapeHtml(pageHeading)}</h1></main></div>`);
+  }
   const titleMatch = /<title>[\s\S]*?<\/title>/i.exec(headTags);
   if (titleMatch) {
     output = /<title>[\s\S]*?<\/title>/i.test(output)

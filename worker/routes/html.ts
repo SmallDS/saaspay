@@ -1,4 +1,5 @@
 import { getSettingValue } from "../db/settings";
+import { getPageHeading } from "../../src/shared/page-heading";
 import {
   buildRobotsTxt,
   buildSeoHeadTags,
@@ -54,6 +55,7 @@ export async function handleHtmlPage(request: Request, env: Env, url: URL, asset
   const canonical = url.origin + (pathname === "/" ? "/" : pathname);
 
   let meta: SeoPageMeta;
+  let pageHeading = "";
   if (pathname === "/checkout" || pathname === "/payment/result" || pathname === "/admin") {
     meta = {
       title: pathname === "/checkout" ? "确认订单" : pathname === "/payment/result" ? "支付结果" : "管理后台",
@@ -65,8 +67,9 @@ export async function handleHtmlPage(request: Request, env: Env, url: URL, asset
     };
   } else {
     const page = await env.DB.prepare(
-      "SELECT title,seo_title,seo_description,seo_keywords,og_image,noindex FROM pages WHERE slug=? AND status='published'",
-    ).bind(slug).first<{ title: string; seo_title: string | null; seo_description: string | null; seo_keywords: string | null; og_image: string | null; noindex: number }>();
+      "SELECT title,seo_title,seo_description,seo_keywords,og_image,noindex,published_json FROM pages WHERE slug=? AND status='published'",
+    ).bind(slug).first<{ title: string; seo_title: string | null; seo_description: string | null; seo_keywords: string | null; og_image: string | null; noindex: number; published_json: string | null }>();
+    if (page) pageHeading = getPageHeading(safeJsonParse(page.published_json || "{}"), page.title || site.name).title;
     meta = {
       title: page?.seo_title || page?.title || site.name,
       description: page?.seo_description || site.tagline,
@@ -79,7 +82,7 @@ export async function handleHtmlPage(request: Request, env: Env, url: URL, asset
 
   const headTags = buildSeoHeadTags(meta, { origin: url.origin, siteName: site.name, seo, customHead: custom.head_html });
   const html = await assetResponse.text();
-  const injected = injectSeoIntoHtml(html, headTags, custom.body_html);
+  const injected = injectSeoIntoHtml(html, headTags, custom.body_html, pageHeading);
   const headers = new Headers();
   headers.set("content-type", "text/html; charset=utf-8");
   headers.set("cache-control", "no-store");
