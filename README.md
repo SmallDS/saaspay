@@ -1,0 +1,228 @@
+# SaaS Store CF
+
+基于 Cloudflare Workers 的轻量 SaaS 产品展示购买系统：可视化编辑落地页，管理产品与套餐，通过支付宝 / 微信支付收款，支付成功后异步通知你的业务系统。
+
+单管理员后台，不做 RBAC / 多租户；全部运行在 Cloudflare 免费可用套餐的组件上（Workers + D1 + R2 + Queues），无传统服务器。
+
+## 功能特性
+
+- **可视化页面编辑**：基于 [Puck](https://puckeditor.com/) 的 17 种区块（Hero、特性、价格表、FAQ、对比表等），草稿与发布分离，支持版本快照与回滚。
+- **产品与套餐管理**：套餐价格由后台统一配置，页面 Pricing 区块实时读取，不重复保存金额。
+- **支付宝电脑网站支付**：本地订单 → 支付宝收银台 → 异步通知 RSA2 验签 → D1 更新订单。
+- **微信支付（API v3）**：PC 使用 Native 扫码支付（结账页展示二维码），手机浏览器自动切换 H5 支付；支持退款与退款回调。
+- **订单运营**：主动对账同步、超时关单、部分退款 / 全额退款、批量查询 / 关闭 / 删除。
+- **对外 Webhook**：支付成功后经 Cloudflare Queue 投递，HMAC-SHA256 签名、指数退避重试、投递日志与手动重发。
+- **R2 素材库**：图片上传与页面区块绑定。
+- **站点视觉配置**：主题色、字体、布局、全局 Header/Footer，实时预览。
+- **SEO 与站点优化**：服务端注入页面标题、描述、关键词、Open Graph、规范链接与结构化数据（百度等不执行脚本的搜索引擎也能正确抓取）；自动生成 robots.txt 与 sitemap.xml；页面级关键词与 noindex；ICP 备案与版权展示；支持接入百度统计 / Google Analytics 等自定义代码。
+
+## 架构与技术栈
+
+| 层 | 技术 |
+|---|---|
+| 运行时 | Cloudflare Workers（`nodejs_compat`） |
+| 数据库 | Cloudflare D1（SQLite），`migrations/` 管理结构变更 |
+| 对象存储 | Cloudflare R2（素材库） |
+| 异步任务 | Cloudflare Queues（Webhook 投递，指数退避重试） |
+| 前端 | React 19 + Ant Design 6 + Puck 可视化编辑器 + Vite |
+| 密码学 | 全部使用 WebCrypto 原生 API（RSA2/AES-GCM/HKDF/HMAC），零第三方加密依赖 |
+
+```
+.
+├── worker/                  # Cloudflare Worker 后端
+│   ├── index.ts             # 入口：fetch / queue 处理器与路由分发
+│   ├── http.ts              # 通用 HTTP 与工具函数
+│   ├── site-settings.ts     # 站点主题 / Header / Footer 设置归一化
+│   ├── routes/              # auth / admin / public / media 路由
+│   ├── orders/              # 订单生命周期与退款
+│   ├── payment/             # 支付宝 / 微信支付协议与渠道适配
+│   ├── webhook/             # 对外 Webhook 投递
+│   ├── auth/                # 管理员会话
+│   ├── crypto/              # 加密与编码工具
+│   └── db/                  # D1 设置读写
+├── src/                     # React 前端（公开站点 + /admin 后台）
+├── migrations/              # D1 数据库迁移
+├── scripts/ci/              # GitHub Actions 辅助脚本
+└── .github/workflows/       # Deploy workflow
+```
+
+## 部署（GitHub Actions，推荐）
+
+与 [cloud-mail](https://doc.skymail.ink/guide/action.html) 的 Action 部署方式相同：Fork 仓库 → 配置 Secrets → 运行 workflow，D1 / R2 / Queue 由 Cloudflare 自动资源预配按名创建，无需手动填写任何资源 ID。
+
+### 1. Fork 仓库
+
+Fork 本仓库到你的 GitHub 账号。
+
+### 2. 创建 Cloudflare API Token
+
+1. 打开 [Cloudflare Dashboard → My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens)，点击 **Create Token**。
+2. 使用模板 **Edit Cloudflare Workers**，在模板权限基础上追加：
+   - `D1` → **Edit**（创建数据库、应用迁移）
+   - `R2` → **Edit**（自动创建素材桶）
+   - `Queues` → **Edit**（自动创建 Webhook 队列）
+3. Account Resources 选择你的目标账户，创建并复制 Token。
+4. 在 Cloudflare Dashboard 首页右侧复制 **Account ID**。
+
+### 3. 配置 GitHub Secrets
+
+在 Fork 后的仓库 **Settings → Secrets and variables → Actions → Repository secrets** 添加：
+
+| Secret | 说明 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | 上一步创建的 API Token |
+| `CLOUDFLARE_ACCOUNT_ID` | 你的 Cloudflare Account ID |
+| `ADMIN_USERNAME` | 管理后台登录账号 |
+| `ADMIN_PASSWORD` | 管理后台登录密码（至少 10 位） |
+
+`SETTINGS_ENCRYPTION_KEY` 不需要配置：首次部署时自动生成并保存为 Cloudflare Secret，后续部署自动沿用（它用于加密后台保存的支付密钥，请勿删除或轮换）。
+
+### 4. 运行部署
+
+推送到 `main` 分支自动触发，或在 **Actions → Deploy → Run workflow** 手动触发。workflow 会依次执行：构建 → `wrangler deploy` → 写入管理员凭据与加密密钥 → 应用 D1 迁移。首次运行约 2-3 分钟。
+
+### 5. 部署后初始化
+
+1. 打开 `https://<worker 域名>/admin`，使用配置的管理员账号密码登录。
+2. **系统设置 → 网站**：设置站点名称和正式主域名（用于生成支付回调地址，建议填写）。
+3. **系统设置 → 支付宝支付 / 微信支付**：填写商户参数并启用（见下文支付配置）。
+4. **系统设置 → Webhook**：填写业务系统 URL，生成 Secret，选择订阅事件。
+5. **产品与套餐**：创建产品和价格。
+6. **页面**：编辑默认首页并发布。
+
+## 本地开发
+
+需要 Node.js 18+（推荐 22）。
+
+```bash
+git clone <你的仓库>
+cd saas-store-cf
+npm install
+cp .dev.vars.example .dev.vars
+npm run db:migrate:local
+npm run dev
+```
+
+`.dev.vars` 内容：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
+SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+```
+
+访问 `http://localhost:5173/admin`。本地开发用的支付回调需要内网穿透才能收到，建议直接在部署环境联调支付。
+
+常用脚本：
+
+| 命令 | 说明 |
+|---|---|
+| `npm run dev` | 本地开发（Vite + Worker） |
+| `npm run build` | 类型检查 + 生产构建 |
+| `npm run db:migrate:local` | 应用本地 D1 迁移 |
+| `npm run db:migrate:remote` | 应用远程 D1 迁移 |
+
+## 支付配置
+
+所有支付参数在 `/admin` 后台录入，敏感项（私钥、APIv3 密钥、Webhook Secret）以 AES-256-GCM 加密存储于 D1。
+
+### 支付宝电脑网站支付
+
+在 **系统设置 → 支付宝支付** 填写：
+
+- **AppID**：开放平台网页应用 AppID
+- **应用私钥**：与该 AppID 的应用公钥匹配的 RSA2 私钥（PKCS1 / PKCS8 均可）
+- **支付宝公钥**：支付宝开放平台返回的支付宝公钥
+- **商户 PID**：可选，填写后增强回调校验（校验 `seller_id`）
+- **网关**：默认 `https://openapi.alipay.com/gateway.do`
+
+回调地址：`https://<你的域名>/api/payment/alipay/notify`，由系统自动生成。
+
+### 微信支付（Native 扫码 + H5）
+
+在 **系统设置 → 微信支付** 填写：
+
+- **AppID**：与商户号绑定的公众号 / 小程序 / 开放平台应用 AppID
+- **商户号（mch_id）**
+- **商户证书序列号**：商户平台 → API 安全 → 商户证书序列号
+- **APIv3 密钥**：32 位字符，用于回调报文解密与平台证书下载
+- **商户私钥**：`apiclient_key.pem` 的完整内容，用于 API 请求签名
+- **微信支付公钥 / 公钥 ID**：可选；公钥模式商户填写（回调 `Wechatpay-Serial` 以 `PUB_KEY_ID_` 开头时使用），平台证书模式商户可留空，系统会自动下载并缓存平台证书
+
+请先在微信支付商户平台开通 **Native 支付** 与 **H5 支付** 产品。回调地址：`https://<你的域名>/api/payment/wechat/notify`，由系统自动生成。
+
+结账流程：访客选择套餐 → 填写联系方式 → 选择支付方式。PC 浏览器展示微信支付二维码并轮询订单状态；手机浏览器自动跳转微信 H5 支付，返回后可在 `/payment/result` 查看结果并继续支付。
+
+## SEO 与站点优化
+
+可视化编辑器内置 25 个区块组件（基础 / 营销 / 商业三类），全部默认文案为中文；页面模板与组件内容开箱即中文。
+
+**服务端 SEO 注入**：Worker 接管页面请求，在返回 HTML 时注入 `<title>`、`description`、`keywords`、Open Graph、`canonical`、`robots` meta 与 WebSite 结构化数据（JSON-LD）——无需浏览器执行脚本，百度、搜狗等搜索引擎可直接抓取。静态资源原样透传。
+
+**站点级配置**（`/admin` → 系统设置 → SEO 与优化）：
+
+- 允许搜索引擎收录开关（关闭后 robots.txt 禁止全部抓取）
+- 全站默认关键词与默认分享图
+- ICP 备案号与版权文案（显示在页脚，备案号自动链接工信部网站）
+- 自定义 Head / Body 代码（用于接入百度统计、Google Analytics、站长验证等）
+
+**页面级配置**（可视化编辑器 → 页面设置）：SEO 标题、描述、关键词、OG 分享图、禁止收录（noindex）开关；发布前检查会提示缺失的 SEO 项。
+
+**自动生成文件**：
+
+- `https://<你的域名>/robots.txt` —— 按收录设置生成，并声明站点地图
+- `https://<你的域名>/sitemap.xml` —— 自动列出所有已发布且未禁止收录的页面
+
+## 支付链路
+
+```text
+创建本地订单（幂等：Idempotency-Key / checkout_request_id 唯一索引）
+  → 支付宝 alipay.trade.page.pay 收银台 / 微信 Native code_url 二维码 / 微信 H5 跳转
+  → 渠道异步回调（支付宝 RSA2 验签 + 金额校验；微信平台证书验签 + APIv3 报文解密 + 金额校验）
+  → orders.status = paid（状态机 CAS 更新，防并发重复标记）
+  → Cloudflare Queue
+  → 对外业务 Webhook
+```
+
+- `/payment/result` 只展示并轮询本地订单状态，不根据浏览器回跳判定支付成功。
+- 订单状态查询接口会节流（30 秒）触发渠道主动对账（支付宝 `trade.query` / 微信查单），回调未到达也能自动收敛状态。
+- 待支付订单 30 分钟未支付自动关闭（支付宝 `trade.close` / 微信关单）。
+
+## 对外 Webhook
+
+事件类型：`order.created`、`order.paid`、`order.closed`、`order.refunded`。
+
+请求头：
+
+```text
+X-Webhook-Id
+X-Webhook-Timestamp
+X-Webhook-Signature: sha256=...
+```
+
+签名原文为 `<timestamp>.<raw-json-body>`，算法 HMAC-SHA256。接收方校验示例（Node.js）：
+
+```js
+const expected = "sha256=" + crypto.createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("base64");
+if (expected !== signature) return res.status(401).end();
+```
+
+使用 `event.id` 做幂等。投递失败自动重试（30s 起指数退避，上限 1 小时，最多 8 次），可在后台 Webhook 日志中查看投递记录并手动重发。
+
+## 安全说明
+
+- **管理员会话**：HMAC 签名 Cookie（HttpOnly / Secure / SameSite=Lax，12 小时），会话密钥由管理员账号密码经 HKDF 派生——修改 `ADMIN_PASSWORD` 即吊销所有旧会话。
+- **敏感配置加密**：支付宝私钥 / 微信 APIv3 密钥与私钥 / Webhook Secret 使用 AES-256-GCM 加密存储，密钥由独立 Secret `SETTINGS_ENCRYPTION_KEY` 经 HKDF 派生，与管理员密码无关。
+- **CSRF**：所有写操作校验 `Origin` 同源。
+- **注入防护**：主题值、页面链接白名单校验；R2 读取拦截路径穿越；Webhook URL 强制 HTTPS。
+- **支付校验**：回调验签 + AppID/商户校验 + 订单金额比对 + 状态机 CAS 更新；退款先预占额度防超退。
+
+> 不要删除或重新生成 `SETTINGS_ENCRYPTION_KEY`；如果丢失该 Secret，后台已保存的敏感设置将无法解密，需要重新录入。
+
+## 参考文档
+
+- [Cloud Mail 的 Action 部署说明（本项目的部署方式参照）](https://doc.skymail.ink/guide/action.html)
+- [Wrangler 自动资源预配](https://developers.cloudflare.com/changelog/post/2025-10-24-automatic-resource-provisioning/)
+- [支付宝电脑网站支付文档](https://opendocs.alipay.com/open/270/105899)
+- [微信支付 API v3 Native 支付](https://pay.weixin.qq.com/doc/v3/merchant/4012791882)
+- [微信支付退款回调通知](https://pay.weixin.qq.com/doc/v3/merchant/4012791886)

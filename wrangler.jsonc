@@ -1,0 +1,51 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "saas-store-cf",
+	"main": "./worker/index.ts",
+	"compatibility_date": "2026-08-14",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// Worker 优先接管全部请求：API/媒体直接处理，静态资源经 ASSETS binding 透传，
+	// HTML 页面注入 SEO meta/JSON-LD 后返回（百度等爬虫不执行 JS，必须服务端输出）。
+	"assets": {
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": true
+	},
+	// 管理员账号密码与 SETTINGS_ENCRYPTION_KEY 通过 GitHub Actions（scripts/ci/ensure-secrets.mjs）
+	// 或 `wrangler secret put` 写入；D1/R2/Queue 由 Cloudflare 自动资源预配按名创建。
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"migrations_dir": "migrations"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "saas-store-cf-media"
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "WEBHOOK_QUEUE",
+				"queue": "saas-store-webhooks"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "saas-store-webhooks",
+				"max_batch_size": 5,
+				"max_batch_timeout": 3,
+				"max_retries": 8,
+				"retry_delay": 30
+			}
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	}
+}
