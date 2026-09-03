@@ -225,7 +225,7 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
   }
 
   if (pathname === "/api/payment/wechat/create" && request.method === "POST") {
-    if (!assertSameOrigin(request)) return bad("请求来源校验失败", 403);
+    if (!assertSameOrigin(request, { allowBrowserFallback: true })) return bad("请求来源校验失败", 403);
     const input = await bodyJson<{ order_no?: string }>(request);
     if (!input.order_no) return bad("订单号不能为空");
     if (typeof input.order_no !== "string" || !/^[A-Za-z0-9_|*\-]{6,32}$/.test(input.order_no)) {

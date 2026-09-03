@@ -254,6 +254,46 @@ test("paid/closed orders and cross-origin requests never initiate a payment", as
   assert.equal(fetchMock.mock.callCount(), 0);
 });
 
+test("browser payments without Origin accept verified same-origin Referer or Fetch Metadata", async (t) => {
+  const { env, fetchMock } = await fixture(t);
+  for (const [ua, mode] of [["iPhone Safari", "h5"], ["Windows Chrome", "native"], [wxUA, "redirect"]]) {
+    for (const headers of [{ referer: origin + "/checkout?plan=test" }, { "sec-fetch-site": "same-origin" }, { referer: origin + "/payment/result", "sec-fetch-site": "same-origin" }]) {
+      const request = paymentRequest("", ua);
+      request.headers.delete("origin");
+      for (const [key, value] of Object.entries(headers)) request.headers.set(key, value);
+      fetchMock.mock.mockImplementation(async (url) => {
+        assert.equal(new URL(url).pathname, `/v3/pay/transactions/${mode}`);
+        return Response.json(mode === "h5" ? { h5_url: "https://wx.tenpay.com/pay" } : { code_url: "weixin://pay/test" });
+      });
+      const response = await handle(request, env);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).mode, mode);
+    }
+  }
+  assert.equal(fetchMock.mock.callCount(), 6);
+});
+
+test("payment origin fallback rejects foreign, opaque, conflicting and unverifiable sources", async (t) => {
+  const { env, db, fetchMock } = await fixture(t);
+  for (const headers of [
+    {}, { origin: "null", referer: origin + "/", "sec-fetch-site": "same-origin" },
+    { origin: "https://other.example", referer: origin + "/", "sec-fetch-site": "same-origin" },
+    { referer: origin + ".other.example/" }, { referer: "https://other.example/?from=" + origin },
+    { referer: "http://shop.example/" }, { referer: "https://shop.example:8443/" },
+    { referer: "not-a-url" }, { referer: "/checkout" }, { referer: "https://other.example/", "sec-fetch-site": "same-origin" },
+    { "sec-fetch-site": "same-site" }, { "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "none" },
+    { referer: origin + "/", "sec-fetch-site": "cross-site" },
+  ]) {
+    const request = paymentRequest();
+    request.headers.delete("origin");
+    for (const [key, value] of Object.entries(headers)) request.headers.set(key, value);
+    const response = await handle(request, env);
+    assert.equal(response.status, 403, JSON.stringify(headers));
+  }
+  assert.equal(fetchMock.mock.callCount(), 0);
+  assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
+});
+
 test("invalid JSAPI provider responses fail without creating bridge parameters", async (t) => {
   const { env, fetchMock } = await fixture(t);
   for (const payload of [{}, { prepay_id: 42 }, { code: "APPID_MCHID_NOT_MATCH", message: "AppID未绑定" }]) {

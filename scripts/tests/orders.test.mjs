@@ -39,6 +39,7 @@ async function fixture(t) {
       method, headers: { origin, cookie, "content-type": "application/json", ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    for (const [name, value] of Object.entries(headers)) if (value === null) request.headers.delete(name);
     return handleAdmin(request, env, new URL(request.url));
   }
   return { db, insert, call, fetchMock };
@@ -86,6 +87,7 @@ test("single and batch force deletion require an admin session and same-origin r
     for (const [headers, status] of [[{ cookie: "" }, 401], [{ cookie: "saas_admin_session=forged" }, 401], [{ origin: "https://other.example" }, 403]]) {
       assert.equal((await call(path, "POST", body, headers)).status, status);
     }
+    assert.equal((await call(path, "POST", body, { origin: null, referer: origin + "/admin", "sec-fetch-site": "same-origin" })).status, 403);
   }
   assert.equal(db.prepare("SELECT count(*) n FROM orders").get().n, 1);
 });
