@@ -71,7 +71,7 @@ async function requireAiEnabled(env: Env): Promise<AiModelId> {
 }
 
 type ChatResponse = {
-  response?: string;
+  response?: unknown;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
@@ -83,35 +83,42 @@ function aiBinding(env: Env): LooseAi {
   return env.AI as unknown as LooseAi;
 }
 
-async function runChat(env: Env, opts: { system: string; prompt: string; maxTokens: number; temperature?: number }): Promise<string> {
+async function runJsonChat(env: Env, opts: { system: string; prompt: string; maxTokens: number; temperature?: number }): Promise<Record<string, unknown>> {
   const model = await requireAiEnabled(env);
   const estimate = estimateNeurons(model, opts.system.length + opts.prompt.length, opts.maxTokens);
   const reserved = await reserveNeurons(env, estimate);
+  let response: ChatResponse | string | null | undefined;
   try {
-    const response = await aiBinding(env).run(model, {
+    response = await aiBinding(env).run(model, {
       messages: [
         { role: "system", content: opts.system },
         { role: "user", content: opts.prompt },
       ],
       max_tokens: opts.maxTokens,
       temperature: opts.temperature ?? 0.7,
-    }) as ChatResponse;
-    const rate = MODEL_NEURONS_PER_MILLION[model];
-    const actual = response.usage
-      ? Math.ceil(((response.usage.prompt_tokens ?? 0) * rate.input + (response.usage.completion_tokens ?? 0) * rate.output) / 1_000_000)
-      : estimate;
-    await settleNeurons(env, reserved, actual);
-    const text = (response.response ?? "").trim();
-    if (!text) throw new Error("AI 未返回内容，请重试或更换模型");
-    return text;
+    }) as typeof response;
   } catch (error) {
-    // 调用失败（含未返回内容）时全额回扣预留（宁少勿超），仅累计调用次数
+    // 仅调用失败时回扣预留；已完成的推理即使内容无效也只结算一次。
     await settleNeurons(env, reserved, 0);
     throw error instanceof Error ? error : new Error("AI 调用失败");
   }
+  const rate = MODEL_NEURONS_PER_MILLION[model];
+  const usage = typeof response === "object" ? response?.usage : undefined;
+  const actual = usage
+    ? Math.ceil(((usage.prompt_tokens ?? 0) * rate.input + (usage.completion_tokens ?? 0) * rate.output) / 1_000_000)
+    : estimate;
+  await settleNeurons(env, reserved, actual);
+  const content = typeof response === "string" ? response : response?.response;
+  if (content == null || (typeof content === "string" && !content.trim())) {
+    throw new Error("AI 未返回内容，请重试或更换模型");
+  }
+  return extractJson(content);
 }
 
-function extractJson(text: string): Record<string, unknown> {
+function extractJson(text: unknown): Record<string, unknown> {
+  // Workers AI 的结构化输出可能已经是 JSON 对象，不能直接调用字符串方法。
+  if (text && typeof text === "object" && !Array.isArray(text)) return text as Record<string, unknown>;
+  if (typeof text !== "string") throw new Error("AI 返回的内容无法解析为 JSON，请重试");
   const stripped = text.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
   const start = stripped.indexOf("{");
   const end = stripped.lastIndexOf("}");
@@ -128,7 +135,7 @@ function extractJson(text: string): Record<string, unknown> {
 const COPYWRITING_SYSTEM = "你是资深中文 SaaS 营销文案专家，文风简洁、具体、有说服力，不使用夸大或空话。只输出 JSON，不要输出任何其他文字或 Markdown 代码块。";
 
 export async function generateProductCopy(env: Env, input: { name: string; points: string }): Promise<{ summary: string; description: string }> {
-  const text = await runChat(env, {
+  const parsed = await runJsonChat(env, {
     system: COPYWRITING_SYSTEM,
     prompt: [
       `为名为「${input.name}」的软件产品撰写中文销售文案。`,
@@ -138,7 +145,6 @@ export async function generateProductCopy(env: Env, input: { name: string; point
     ].join("\n"),
     maxTokens: 600,
   });
-  const parsed = extractJson(text);
   const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
   const description = typeof parsed.description === "string" ? parsed.description.trim() : "";
   if (!summary || !description) throw new Error("AI 返回的文案缺少字段，请重试");
@@ -146,7 +152,7 @@ export async function generateProductCopy(env: Env, input: { name: string; point
 }
 
 export async function generateSeoMeta(env: Env, input: { pageTitle: string; pageText: string; keywords?: string }): Promise<{ seo_title: string; seo_description: string; seo_keywords: string }> {
-  const text = await runChat(env, {
+  const parsed = await runJsonChat(env, {
     system: "你是中文 SEO 专家，为网页生成搜索友好的元信息。只输出 JSON，不要输出任何其他文字或 Markdown 代码块。",
     prompt: [
       `页面标题：${input.pageTitle}`,
@@ -158,7 +164,6 @@ export async function generateSeoMeta(env: Env, input: { pageTitle: string; page
     maxTokens: 250,
     temperature: 0.5,
   });
-  const parsed = extractJson(text);
   const seo_title = typeof parsed.seo_title === "string" ? parsed.seo_title.trim().slice(0, 60) : "";
   const seo_description = typeof parsed.seo_description === "string" ? parsed.seo_description.trim().slice(0, 200) : "";
   const seo_keywords = typeof parsed.seo_keywords === "string" ? parsed.seo_keywords.trim().slice(0, 200) : "";
@@ -177,7 +182,7 @@ export const AI_SECTION_PROMPTS: Record<string, string> = {
 export async function generateSectionProps(env: Env, input: { component: string; brief: string }): Promise<Record<string, unknown>> {
   const schema = AI_SECTION_PROMPTS[input.component];
   if (!schema) throw new Error("不支持的组件类型");
-  const text = await runChat(env, {
+  const parsed = await runJsonChat(env, {
     system: "你是资深中文落地页文案专家，为落地页组件生成字段内容。只输出 JSON，不要输出任何其他文字或 Markdown 代码块。",
     prompt: [
       `组件类型：${input.component}`,
@@ -186,7 +191,6 @@ export async function generateSectionProps(env: Env, input: { component: string;
     ].join("\n"),
     maxTokens: 600,
   });
-  const parsed = extractJson(text);
   if (Object.keys(parsed).length === 0) throw new Error("AI 返回的字段为空，请重试");
   return parsed;
 }
@@ -194,22 +198,24 @@ export async function generateSectionProps(env: Env, input: { component: string;
 export async function describeAssetImage(env: Env, imageBytes: Uint8Array): Promise<string> {
   await requireAiEnabled(env);
   const reserved = await reserveNeurons(env, VISION_NEURONS_PER_IMAGE);
+  let response: { description?: unknown; response?: unknown } | string | null | undefined;
   try {
-    const response = await aiBinding(env).run(VISION_MODEL, {
+    response = await aiBinding(env).run(VISION_MODEL, {
       image: Array.from(imageBytes),
       prompt: "用一句中文描述这张图片的核心内容，不超过 60 字，直接给出描述本身，不要任何前缀。",
       max_tokens: VISION_MAX_OUTPUT_TOKENS,
       temperature: 0.3,
-    }) as { description?: string; response?: string };
-    await settleNeurons(env, reserved, reserved);
-    const text = (response.description ?? response.response ?? "").trim();
-    if (!text) throw new Error("AI 未返回图片描述，请重试");
-    return text.slice(0, 120);
+    }) as typeof response;
   } catch (error) {
     if (error instanceof AiBudgetExceededError) throw error;
     await settleNeurons(env, reserved, 0);
     throw error instanceof Error ? error : new Error("图片描述生成失败");
   }
+  await settleNeurons(env, reserved, reserved);
+  const candidates = typeof response === "string" ? [response] : [response?.description, response?.response];
+  const text = candidates.find((value): value is string => typeof value === "string" && !!value.trim());
+  if (!text) throw new Error("AI 未返回图片描述，请重试");
+  return text.trim().slice(0, 120);
 }
 
 export async function getAiUsage(env: Env): Promise<{ day: string; neurons_used: number; calls: number; limit: number }> {

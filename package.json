@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:ai": "node --test scripts/tests/ai.test.mjs",
     "preview": "vite preview",
     "cf:types": "wrangler types ./worker-configuration.d.ts",
     "prebuild": "wrangler types ./worker-configuration.d.ts",
