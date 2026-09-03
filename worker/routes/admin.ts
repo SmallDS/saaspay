@@ -57,7 +57,9 @@ async function adminSettings(env: Env): Promise<Record<string, unknown>> {
     },
     wechat: {
       enabled: value("payment.wechat.enabled", "false") === "true",
+      jsapi_enabled: value("payment.wechat.jsapi_enabled", "false") === "true",
       app_id: value("payment.wechat.app_id"),
+      app_secret_configured: Boolean(rows["payment.wechat.app_secret"]?.value),
       mch_id: value("payment.wechat.mch_id"),
       mch_serial_no: value("payment.wechat.mch_serial_no"),
       api_v3_key_configured: Boolean(rows["payment.wechat.api_v3_key"]?.value),
@@ -112,7 +114,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     const input = await bodyJson<{
       site?: { name?: string; tagline?: string; primary_domain?: string; theme?: Record<string, unknown>; header?: Record<string, unknown>; footer?: Record<string, unknown> };
       alipay?: { enabled?: boolean; app_id?: string; gateway?: string; seller_id?: string; private_key?: string; public_key?: string };
-      wechat?: { enabled?: boolean; app_id?: string; mch_id?: string; mch_serial_no?: string; api_v3_key?: string; private_key?: string; public_key?: string; public_key_id?: string };
+      wechat?: { enabled?: boolean; jsapi_enabled?: boolean; app_id?: string; app_secret?: string; mch_id?: string; mch_serial_no?: string; api_v3_key?: string; private_key?: string; public_key?: string; public_key_id?: string };
       seo?: Record<string, unknown>;
       legal?: Record<string, unknown>;
       custom_code?: Record<string, unknown>;
@@ -141,6 +143,8 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     }
     if (input.wechat) {
       if (typeof input.wechat.enabled === "boolean") writes.push(setSetting(env, "payment.wechat.enabled", String(input.wechat.enabled)));
+      if (typeof input.wechat.jsapi_enabled === "boolean") writes.push(setSetting(env, "payment.wechat.jsapi_enabled", String(input.wechat.jsapi_enabled)));
+      if (typeof input.wechat.app_secret === "string" && input.wechat.app_secret.trim()) writes.push(setSetting(env, "payment.wechat.app_secret", input.wechat.app_secret.trim(), true));
       if (typeof input.wechat.app_id === "string") writes.push(setSetting(env, "payment.wechat.app_id", input.wechat.app_id.trim()));
       if (typeof input.wechat.mch_id === "string") writes.push(setSetting(env, "payment.wechat.mch_id", input.wechat.mch_id.trim()));
       if (typeof input.wechat.mch_serial_no === "string") writes.push(setSetting(env, "payment.wechat.mch_serial_no", input.wechat.mch_serial_no.trim()));
@@ -303,8 +307,8 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
   }
 
   if (pathname === "/api/admin/orders/batch" && request.method === "POST") {
-    const input = await bodyJson<{ action?: "query" | "close" | "delete"; order_nos?: unknown }>(request);
-    if (!input.action || !["query", "close", "delete"].includes(input.action)) return bad("批量操作类型无效");
+    const input = await bodyJson<{ action?: "query" | "close" | "delete" | "force-delete"; order_nos?: unknown }>(request);
+    if (!input.action || !["query", "close", "delete", "force-delete"].includes(input.action)) return bad("批量操作类型无效");
     if (!Array.isArray(input.order_nos) || !input.order_nos.every((value): value is string => typeof value === "string")) {
       return bad("订单号列表无效");
     }
@@ -324,8 +328,8 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
 
     for (const orderNoValue of orderNos) {
       try {
-        if (input.action === "delete") {
-          const result = await deletePaymentOrder(env, orderNoValue);
+        if (input.action === "delete" || input.action === "force-delete") {
+          const result = await deletePaymentOrder(env, orderNoValue, { force: input.action === "force-delete" });
           results.push({
             order_no: orderNoValue,
             ok: result.deleted,
@@ -381,10 +385,11 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     });
   }
 
-  const adminOrderDelete = pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
-  if (adminOrderDelete && adminOrderDelete[1] !== "batch" && request.method === "DELETE") {
+  const adminOrderDelete = pathname.match(/^\/api\/admin\/orders\/([^/]+)(\/force-delete)?$/);
+  const forceDelete = Boolean(adminOrderDelete?.[2]);
+  if (adminOrderDelete && adminOrderDelete[1] !== "batch" && request.method === (forceDelete ? "POST" : "DELETE")) {
     try {
-      const result = await deletePaymentOrder(env, decodeURIComponent(adminOrderDelete[1]));
+      const result = await deletePaymentOrder(env, decodeURIComponent(adminOrderDelete[1]), { force: forceDelete });
       if (!result.order) return bad("订单不存在", 404);
       if (!result.deleted) return bad(result.message ?? "订单未删除", 409);
       return json({ ok: true, order_no: result.order.order_no, message: result.message ?? "订单已删除" });

@@ -25,6 +25,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: AI、支付与页面回归测试
+        run: |
+          npm run test:ai
+          npm run test:payment
+          npm run test:pages
+          npm run test:orders
+
       - name: 构建
         run: npm run build
 

@@ -1,9 +1,12 @@
 import { bad, bodyJson, classifyContactInfo, id, json, nowIso, orderNo, parseCnyCents, paymentSuccess, recordValue, webhookContactFields } from "../http";
 import { getSettingValue } from "../db/settings";
+import { assertSameOrigin } from "../auth/session";
+import { getWechatOpenId, handleWechatOAuthCallback, startWechatOAuth } from "../payment/wechat-oauth";
 import { getLegalSettings, getSeoSettings } from "../seo";
 import { createPagePayForm, createWapPayForm, verifyAlipayNotify } from "../payment/alipay";
 import {
   createWechatH5Payment,
+  createWechatJsapiPayment,
   createWechatNativePayment,
   decryptWechatResource,
   getWechatConfig,
@@ -40,6 +43,9 @@ function wechatFailure(message: string): Response {
 
 export async function handlePublic(request: Request, env: Env, url: URL): Promise<Response | null> {
   const pathname = url.pathname;
+  if (pathname === "/api/payment/wechat/oauth/callback" && request.method === "GET") {
+    return handleWechatOAuthCallback(request, env, url);
+  }
   if (pathname === "/api/health") return json({ ok: true, service: "saas-store-cf", time: nowIso() });
   if (pathname === "/api/public/site" && request.method === "GET") {
     const [name, tagline, themeRaw, headerRaw, footerRaw, seo, legal] = await Promise.all([
@@ -219,8 +225,12 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
   }
 
   if (pathname === "/api/payment/wechat/create" && request.method === "POST") {
+    if (!assertSameOrigin(request)) return bad("请求来源校验失败", 403);
     const input = await bodyJson<{ order_no?: string }>(request);
     if (!input.order_no) return bad("订单号不能为空");
+    if (typeof input.order_no !== "string" || !/^[A-Za-z0-9_|*\-]{6,32}$/.test(input.order_no)) {
+      return bad("当前订单号不符合微信支付要求，请返回商品页重新下单");
+    }
     await closeExpiredOrder(env, input.order_no);
     const order = await env.DB.prepare("SELECT * FROM orders WHERE order_no=?").bind(input.order_no).first<{ id: string; order_no: string; amount_cents: number; product_name: string; plan_name: string; status: string }>();
     if (!order) return bad("订单不存在", 404);
@@ -235,9 +245,24 @@ export async function handlePublic(request: Request, env: Env, url: URL): Promis
     const description = `${order.product_name} - ${order.plan_name}`;
     const notifyUrl = `${origin}/api/payment/wechat/notify`;
     const isMobile = /android|iphone|ipod|ipad|mobile/i.test(request.headers.get("user-agent") ?? "");
+    const isWechat = /micromessenger/i.test(request.headers.get("user-agent") ?? "");
     const clientIp = request.headers.get("cf-connecting-ip") ?? "";
     try {
-      if (isMobile) {
+      if (isWechat && config.jsapiEnabled) {
+        const paymentOrigin = new URL(origin).origin;
+        if (!paymentOrigin.startsWith("https://")) return bad("微信内支付需要使用 HTTPS 域名", 409);
+        // 先回到主域名，再设置授权 Cookie，避免跨域名回调丢失浏览器凭据。
+        if (paymentOrigin !== url.origin) {
+          const target = new URL("/payment/result", paymentOrigin);
+          target.search = new URLSearchParams({ order_no: order.order_no, pay: "wxjsapi" }).toString();
+          return json({ ok: true, mode: "redirect", redirect_url: target.href });
+        }
+        const openid = await getWechatOpenId(request, env, config.appId);
+        if (!openid) return await startWechatOAuth(request, env, config, order.order_no);
+        const params = await createWechatJsapiPayment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl, openid });
+        return json({ ok: true, mode: "jsapi", pay_params: params });
+      }
+      if (isMobile && !isWechat) {
         const payment = await createWechatH5Payment(config, { orderNo: order.order_no, amountCents: order.amount_cents, description, notifyUrl, payerClientIp: clientIp });
         return json({ ok: true, mode: "h5", h5_url: payment.h5_url });
       }

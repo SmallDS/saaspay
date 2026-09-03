@@ -3,6 +3,9 @@ import { Button, Descriptions, Form, Input, InputNumber, Modal, Select, Space, T
 import { api, money } from "../shared/api";
 
 type OrderStatus = "pending" | "paid" | "closed" | "refunded";
+type BatchAction = "query" | "close" | "delete" | "force-delete";
+
+const forceDeleteWarning = "将永久删除本系统中的订单和关联退款记录，无法恢复。这不会关闭微信或支付宝交易，也不会退款；删除后本系统无法继续处理该订单的支付或退款通知。";
 
 type Order = {
   id: string;
@@ -97,7 +100,7 @@ export function Orders() {
   const [status, setStatus] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [selectedOrderNos, setSelectedOrderNos] = useState<string[]>([]);
-  const [batchLoading, setBatchLoading] = useState<"query" | "close" | "delete" | null>(null);
+  const [batchLoading, setBatchLoading] = useState<BatchAction | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [detailOrder, setDetailOrder] = useState<Order | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -146,8 +149,8 @@ export function Orders() {
     }
   }
 
-  async function runBatchAction(action: "query" | "close" | "delete") {
-    if (selectedOrderNos.length === 0) {
+  async function runBatchAction(action: BatchAction, orderNos = selectedOrderNos) {
+    if (orderNos.length === 0) {
       message.warning("请先选择订单");
       return;
     }
@@ -157,10 +160,10 @@ export function Orders() {
         "/api/admin/orders/batch",
         {
           method: "POST",
-          body: JSON.stringify({ action, order_nos: selectedOrderNos }),
+          body: JSON.stringify({ action, order_nos: orderNos }),
         },
       );
-      const actionLabel = action === "query" ? "查询" : action === "close" ? "关闭" : "删除";
+      const actionLabel = action === "query" ? "查询" : action === "close" ? "关闭" : action === "force-delete" ? "强制删除" : "删除";
       if (data.failed > 0) message.warning("批量" + actionLabel + "完成：成功 " + data.succeeded + " 条，失败 " + data.failed + " 条");
       else message.success("批量" + actionLabel + "成功，共 " + data.succeeded + " 条");
       const failedOrderNos = data.results.filter((result) => !result.ok).map((result) => result.order_no);
@@ -173,27 +176,28 @@ export function Orders() {
     }
   }
 
-  function confirmBatchDelete() {
+  function confirmBatchDelete(force = false) {
     if (selectedOrderNos.length === 0) {
       message.warning("请先选择订单");
       return;
     }
+    const orderNos = [...selectedOrderNos];
     Modal.confirm({
-      title: "确认批量删除订单？",
-      content: "仅已关闭或已全额退款的订单可以删除；已支付未全额退款的订单会被逐条保留。",
-      okText: "批量删除",
+      title: force ? `确认强制删除选中的 ${orderNos.length} 条订单？` : "确认批量删除订单？",
+      content: force ? forceDeleteWarning : "仅已关闭或已全额退款的订单可以删除；已支付未全额退款的订单会被逐条保留。",
+      okText: force ? "强制删除" : "批量删除",
       cancelText: "取消",
       okButtonProps: { danger: true },
-      onOk: () => runBatchAction("delete"),
+      onOk: () => runBatchAction(force ? "force-delete" : "delete", orderNos),
     });
   }
 
-  async function deleteOrder(order: Order) {
-    const key = "delete:" + order.id;
+  async function deleteOrder(order: Order, force = false) {
+    const key = (force ? "force-delete:" : "delete:") + order.id;
     setActionLoading(key);
     try {
-      await api("/api/admin/orders/" + encodeURIComponent(order.order_no), { method: "DELETE" });
-      message.success("订单已删除");
+      await api("/api/admin/orders/" + encodeURIComponent(order.order_no) + (force ? "/force-delete" : ""), { method: force ? "POST" : "DELETE" });
+      message.success(force ? "订单已强制删除" : "订单已删除");
       setSelectedOrderNos((selected) => selected.filter((orderNo) => orderNo !== order.order_no));
       await load();
     } catch (error) {
@@ -203,14 +207,14 @@ export function Orders() {
     }
   }
 
-  function confirmDelete(order: Order) {
+  function confirmDelete(order: Order, force = false) {
     Modal.confirm({
-      title: "确认删除订单？",
-      content: "删除后订单和关联退款记录将不再出现在后台，且无法恢复。",
-      okText: "删除",
+      title: force ? "确认强制删除订单？" : "确认删除订单？",
+      content: force ? <><Typography.Paragraph style={{ overflowWrap: "anywhere" }}>订单号：{order.order_no}</Typography.Paragraph><Typography.Paragraph>{forceDeleteWarning}</Typography.Paragraph></> : "删除后订单和关联退款记录将不再出现在后台，且无法恢复。",
+      okText: force ? "强制删除" : "删除",
       cancelText: "取消",
       okButtonProps: { danger: true },
-      onOk: () => deleteOrder(order),
+      onOk: () => deleteOrder(order, force),
     });
   }
 
@@ -304,7 +308,8 @@ export function Orders() {
       <Typography.Text type="secondary">已选 {selectedOrderNos.length} 条</Typography.Text>
       <Button disabled={selectedOrderNos.length === 0} loading={batchLoading === "query"} onClick={() => void runBatchAction("query")}>批量同步状态</Button>
       <Button disabled={selectedOrderNos.length === 0} loading={batchLoading === "close"} onClick={() => void runBatchAction("close")}>批量关闭</Button>
-      <Button danger disabled={selectedOrderNos.length === 0} loading={batchLoading === "delete"} onClick={confirmBatchDelete}>批量删除</Button>
+      <Button danger disabled={selectedOrderNos.length === 0 || batchLoading !== null} loading={batchLoading === "delete"} onClick={() => confirmBatchDelete()}>批量删除</Button>
+      <Button danger disabled={selectedOrderNos.length === 0 || batchLoading !== null} loading={batchLoading === "force-delete"} onClick={() => confirmBatchDelete(true)}>批量强制删除</Button>
       {selectedOrderNos.length > 0 && <Button type="link" onClick={() => setSelectedOrderNos([])}>清除选择</Button>}
     </Space>
 
@@ -342,7 +347,7 @@ export function Orders() {
         {
           title: "操作",
           fixed: "right",
-          width: 340,
+          width: 400,
           render: (_value: unknown, order: Order) => {
             const remaining = remainingCents(order);
             const queryKey = "query:" + order.id;
@@ -363,6 +368,7 @@ export function Orders() {
               {order.status === "paid" && remaining > 0 && <Button type="link" size="small" onClick={() => openRefund(order)}>退款</Button>}
               {order.refunded_cents > 0 && <Button type="link" size="small" onClick={() => void openRefunds(order)}>退款记录</Button>}
               {canDelete(order) && <Button type="link" danger size="small" loading={actionLoading === deleteKey} onClick={() => confirmDelete(order)}>删除</Button>}
+              <Button type="link" danger size="small" disabled={actionLoading !== null || batchLoading !== null} loading={actionLoading === "force-delete:" + order.id} onClick={() => confirmDelete(order, true)}>强制删除</Button>
             </Space>;
           },
         },

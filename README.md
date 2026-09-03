@@ -9,8 +9,8 @@
 - **可视化页面编辑**：基于 [Puck](https://puckeditor.com/) 的 17 种区块（Hero、特性、价格表、FAQ、对比表等），草稿与发布分离，支持版本快照与回滚。
 - **产品与套餐管理**：套餐价格由后台统一配置，页面 Pricing 区块实时读取，不重复保存金额。
 - **支付宝网站支付**：PC 走电脑网站支付（`alipay.trade.page.pay`），手机浏览器自动切换手机网站支付（`alipay.trade.wap.pay`），异步通知 RSA2 验签。
-- **微信支付（API v3）**：PC 使用 Native 扫码支付（结账页展示二维码），手机浏览器自动切换 H5 支付；支持退款与退款回调。
-- **订单运营**：主动对账同步、超时关单、部分退款 / 全额退款、批量查询 / 关闭 / 删除。
+- **微信支付（API v3）**：PC 使用 Native 扫码支付，手机浏览器使用 H5，微信内支持公众号 JSAPI 支付（网页授权获取 OpenID、直接调起收银台）；支持退款与退款回调。
+- **订单运营**：主动对账同步、超时关单、部分退款 / 全额退款、批量查询 / 关闭 / 删除，以及异常订单的单笔 / 批量强制删除。
 - **对外 Webhook**：支付成功后经 Cloudflare Queue 投递，HMAC-SHA256 签名、指数退避重试、投递日志与手动重发。
 - **R2 素材库**：图片上传与页面区块绑定。
 - **AI 内容助手**（基于 Cloudflare Workers AI）：产品文案、页面区块文案、SEO 元信息与图片 alt 中文描述一键生成；内置每日 9,900 Neurons 硬护栏，永不超出免费额度。
@@ -93,7 +93,7 @@ Fork 本仓库到你的 GitHub 账号。
 
 ## 本地开发
 
-需要 Node.js 18+（推荐 22）。
+需要 Node.js 22.15+（推荐最新 Node.js 22 或 24）。
 
 ```bash
 git clone <你的仓库>
@@ -122,6 +122,9 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 |---|---|
 | `npm run dev` | 本地开发（Vite + Worker） |
 | `npm run build` | 类型检查 + 生产构建 |
+| `npm run test:ai` | AI 响应与用量结算回归测试 |
+| `npm run test:payment` | 微信支付签名、网页授权、支付分流和 JSBridge 回归测试（模拟微信接口，不发起真实交易） |
+| `npm run test:orders` | 普通 / 强制删除订单、关联记录清理、批量结果及管理员权限回归测试 |
 | `npm run db:migrate:local` | 应用本地 D1 迁移 |
 | `npm run db:migrate:remote` | 应用远程 D1 迁移 |
 
@@ -148,20 +151,34 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 请确认已在支付宝开放平台签约「电脑网站支付」与「手机网站支付」两个产品。回调地址：`https://<你的域名>/api/payment/alipay/notify`，两者共用。
 
-### 微信支付（Native 扫码 + H5）
+### 微信支付（Native 扫码 + H5 + JSAPI）
 
 在 **系统设置 → 微信支付** 填写：
 
 - **AppID**：与商户号绑定的公众号 / 小程序 / 开放平台应用 AppID
+- **启用微信内支付（JSAPI）**：默认关闭；开启时上方 AppID 必须是支持 JSAPI 支付的已认证公众号 AppID
+- **公众号 AppSecret**：JSAPI 网页授权使用，与上方公众号 AppID 配套；加密保存在服务端，留空不修改已保存值
 - **商户号（mch_id）**
 - **商户证书序列号**：商户平台 → API 安全 → 商户证书序列号
 - **APIv3 密钥**：32 位字符，用于回调报文解密与平台证书下载
 - **商户私钥**：`apiclient_key.pem` 的完整内容，用于 API 请求签名
 - **微信支付公钥 / 公钥 ID**：可选；公钥模式商户填写（回调 `Wechatpay-Serial` 以 `PUB_KEY_ID_` 开头时使用），平台证书模式商户可留空，系统会自动下载并缓存平台证书
 
-请先在微信支付商户平台开通 **Native 支付** 与 **H5 支付** 产品。回调地址：`https://<你的域名>/api/payment/wechat/notify`，由系统自动生成。
+请在微信支付商户平台开通所需的 **Native 支付**、**H5 支付**、**JSAPI 支付** 产品。支付结果通知共用 `https://<你的域名>/api/payment/wechat/notify`，由系统自动生成。
 
-结账流程：访客选择套餐 → 填写联系方式 → 选择支付方式。PC 浏览器展示微信支付二维码并轮询订单状态；手机浏览器自动跳转微信 H5 支付，返回后可在 `/payment/result` 查看结果并继续支付。
+JSAPI 上线配置：
+
+1. 完成公众号与商户号的授权绑定，在后台填写公众号 AppID、AppSecret，并打开「启用微信内支付（JSAPI）」。
+2. **系统设置 → 网站**：填写正式 HTTPS 主域名，例如 `https://shop.example.com`。
+3. **微信公众平台**：将 `shop.example.com` 配置为公众号的网页授权域名（仅域名，不带协议和路径），并按平台要求完成域名验证。系统的授权回调地址为 `https://shop.example.com/api/payment/wechat/oauth/callback`。
+4. **微信支付商户平台**：配置 JSAPI 支付授权目录为 `https://shop.example.com/payment/`（保留末尾斜杠）。所有微信内调起支付都在 `/payment/result` 页面完成。
+5. 部署时应用 `0008_wechat_jsapi.sql` 数据库迁移；现有 GitHub Actions 会自动应用。本地开发执行 `npm run db:migrate:local`。
+
+结账流程：访客选择套餐 → 填写联系方式 → 选择支付方式。PC 展示二维码，手机外部浏览器跳转 H5，微信内进入结果页，通过 `snsapi_base` 网页授权获取 OpenID 后调起 JSAPI 收银台。授权往返和取消后重试均沿用同一笔订单，不会重复创建订单。未开启 JSAPI 时，微信内展示二维码。
+
+OpenID 仅从服务端授权响应获取，不接受前端传入的 OpenID；网页授权状态绑定浏览器与订单、10 分钟有效且只能使用一次。短期 OpenID 会话使用加密的 HttpOnly / Secure Cookie，前端不会获得 AppSecret 或授权 access_token。支付成功仍以服务端查单或验签后的异步通知为准，前端收银台回调不会直接修改订单状态。
+
+上线后需在真实微信客户端验证授权、调起、取消重试及支付回调。配置要求参见[微信支付接入准备](https://pay.wechatpay.cn/doc/v3/merchant/4015423216)，调起方式参见[JSAPI 调起支付](https://pay.wechatpay.cn/doc/v3/merchant/4012791857)。
 
 ## SEO 与站点优化
 
@@ -218,6 +235,8 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 - `/payment/result` 只展示并轮询本地订单状态，不根据浏览器回跳判定支付成功。
 - 订单状态查询接口会节流（30 秒）触发渠道主动对账（支付宝 `trade.query` / 微信查单），回调未到达也能自动收敛状态。
 - 待支付订单 30 分钟未支付自动关闭（支付宝 `trade.close` / 微信关单）。
+
+后台订单列表支持“强制删除”和“批量强制删除”（每次最多 20 条），确认后可删除任意状态的异常订单，适用于订单号错误、渠道无法查单或关单等情况。该操作永久删除本系统订单及关联退款记录、微信授权状态；不会调用支付渠道关闭交易或退款，渠道交易仍需在微信 / 支付宝商户平台处理。删除后本系统无法继续处理该订单的支付及退款通知，已支付订单删除后也会从后台营收统计中移除。普通删除仍保留原有状态限制。
 
 ## 对外 Webhook
 

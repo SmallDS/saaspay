@@ -33,12 +33,10 @@ export function id(prefix: string): string {
 }
 
 export function orderNo(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
-  const random = crypto.getRandomValues(new Uint8Array(12));
+  // ORD + 28 hex characters stays within WeChat's 32-character limit.
+  const random = crypto.getRandomValues(new Uint8Array(14));
   const rand = Array.from(random, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
-  return `ORD${stamp}${rand}`;
+  return `ORD${rand}`;
 }
 
 export function paymentSuccess(): Response {

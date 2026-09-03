@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Puck, Render, type Data } from "@puckeditor/core";
 import { Alert, Button, Card, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
 import { api } from "../shared/api";
-import { defaultPageData, pageConfig, pageTemplates, type StorefrontAsset } from "../editor/config";
+import { createAiPageBlock, defaultPageData, pageConfig, pageTemplates, type StorefrontAsset } from "../editor/config";
 
 type PageRow = { id: string; title: string; slug: string; status: string; seo_title?: string; seo_description?: string; seo_keywords?: string; og_image?: string; noindex?: number; updated_at: string };
 type PageDetail = PageRow & { draft_json: string };
@@ -212,7 +212,7 @@ function PageEditor({ page, onSaved }: { page: EditorPage; onSaved: () => Promis
 
   async function appendAiSection() {
     if (!aiSectionProps) return;
-    const block = { type: aiSectionComponent, props: { id: crypto.randomUUID(), ...aiSectionProps } };
+    const block = createAiPageBlock(aiSectionComponent, aiSectionProps);
     latestData.current = { ...latestData.current, content: [...(latestData.current.content ?? []), block] } as Data;
     await persist(latestData.current);
     message.success("已追加到草稿并保存");

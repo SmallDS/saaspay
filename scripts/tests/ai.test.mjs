@@ -1,28 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { registerHooks } from "node:module";
 import test from "node:test";
-import ts from "typescript";
-
-// Load the Worker's TypeScript with its existing extensionless imports.
-const workerRoot = new URL("../../worker/", import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (context.parentURL?.startsWith(workerRoot) && specifier.startsWith(".") && !specifier.endsWith(".ts")) {
-      specifier += ".ts";
-    }
-    return nextResolve(specifier, context);
-  },
-  load(url, context, nextLoad) {
-    if (url.startsWith(workerRoot) && url.endsWith(".ts")) {
-      const { outputText } = ts.transpileModule(readFileSync(new URL(url), "utf8"), {
-        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-      });
-      return { format: "module", source: outputText, shortCircuit: true };
-    }
-    return nextLoad(url, context);
-  },
-});
+import "./register-typescript.mjs";
 const ai = await import("../../worker/ai.ts");
 
 function mockEnv(result, model = ai.DEFAULT_AI_MODEL) {

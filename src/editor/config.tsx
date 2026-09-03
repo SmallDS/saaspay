@@ -77,8 +77,9 @@ function pipeItems(value: string, count: 2 | 3): PipeItem[] {
     return { left: parts[0] ?? "", middle: parts[1] ?? "", right: count === 3 ? parts[2] ?? "" : "" };
   }).filter((item) => item.left && item.middle);
 }
-function safeHref(value: string): string {
-  return /^(?:#|\/(?!\/)|https:\/\/|mailto:)/i.test(value.trim()) ? value.trim() : "#";
+function safeHref(value: unknown): string {
+  const href = typeof value === "string" ? value.trim() : "";
+  return /^(?:#|\/(?!\/)|https:\/\/|mailto:)/i.test(href) ? href : "#";
 }
 function getAssets(metadata: unknown): StorefrontAsset[] {
   const value = metadata as { assets?: StorefrontAsset[] } | undefined;
@@ -152,7 +153,7 @@ export const pageConfig: Config<PageProps> = {
         image_alt: { type: "text", label: "图片替代文字" },
       },
       defaultProps: { eyebrow: "SAAS 产品", title: "让你的产品更容易被购买", description: "展示产品、配置套餐并通过支付宝、微信支付完成收款。", buttonText: "查看套餐", buttonHref: "#pricing", layout: "center", image_url: "", image_alt: "" },
-      render: ({ eyebrow, title, description, buttonText, buttonHref, layout, image_url, image_alt }) => (
+      render: ({ eyebrow, title, description, buttonText, buttonHref = "#pricing", layout, image_url, image_alt }) => (
         <section className={`block hero-block ${layout === "split" ? "hero-split" : ""}`}>
           <div className="container hero-inner">
             <div className="hero-copy">
@@ -362,10 +363,21 @@ export const pageConfig: Config<PageProps> = {
     CTA: {
       fields: { title: { type: "text", label: "标题" }, description: { type: "textarea", label: "描述" }, buttonText: { type: "text", label: "按钮文字" }, buttonHref: { type: "text", label: "按钮链接" } },
       defaultProps: { title: "准备开始了吗？", description: "选择适合你的套餐并完成购买。", buttonText: "立即购买", buttonHref: "#pricing" },
-      render: ({ title, description, buttonText, buttonHref }) => <section className="block cta-block"><div className="container"><h2>{title}</h2><p>{description}</p><Button type="primary" size="large" href={safeHref(buttonHref)}>{buttonText}</Button></div></section>,
+      render: ({ title, description, buttonText, buttonHref = "#pricing" }) => <section className="block cta-block"><div className="container"><h2>{title}</h2><p>{description}</p><Button type="primary" size="large" href={safeHref(buttonHref)}>{buttonText}</Button></div></section>,
     },
   },
 };
+
+export function createAiPageBlock(type: string, generated: Record<string, unknown>): Data["content"][number] {
+  if (!Object.hasOwn(pageConfig.components, type)) throw new Error("不支持的组件类型");
+  const component = pageConfig.components[type as keyof PageProps];
+  const props: Record<string, unknown> = { ...component.defaultProps };
+  // AI 只生成部分文案字段；其余配置沿用组件默认值，且不接受错误类型或额外字段。
+  for (const [key, value] of Object.entries(generated)) {
+    if (Object.hasOwn(props, key) && typeof value === typeof props[key]) props[key] = value;
+  }
+  return { type, props: { ...props, id: crypto.randomUUID() } };
+}
 
 export const defaultPageData: Data = {
   content: [

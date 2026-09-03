@@ -10,7 +10,7 @@ type AiUsage = { day: string; neurons_used: number; calls: number; limit: number
 type SettingsData = {
   site: { name: string; tagline: string; primary_domain: string; theme: SiteThemeSettings; header: SiteHeaderSettings; footer: SiteFooterSettings };
   alipay: { enabled: boolean; app_id: string; gateway: string; seller_id: string; private_key_configured: boolean; public_key_configured: boolean };
-  wechat: { enabled: boolean; app_id: string; mch_id: string; mch_serial_no: string; api_v3_key_configured: boolean; private_key_configured: boolean; public_key_configured: boolean; public_key_id: string };
+  wechat: { enabled: boolean; jsapi_enabled: boolean; app_id: string; app_secret_configured: boolean; mch_id: string; mch_serial_no: string; api_v3_key_configured: boolean; private_key_configured: boolean; public_key_configured: boolean; public_key_id: string };
   seo: { keywords: string; default_og_image: string; robots_allow: boolean };
   legal: { icp_no: string; copyright: string };
   custom_code: { head_html: string; body_html: string };
@@ -303,7 +303,7 @@ export function Settings() {
       footer: { ...result.settings.site.footer, links_text: linksToText(result.settings.site.footer.links) },
     });
     alipay.setFieldsValue(result.settings.alipay);
-    wechat.setFieldsValue(result.settings.wechat);
+    wechat.setFieldsValue({ ...result.settings.wechat, app_secret: "" });
     seoForm.setFieldsValue({ ...result.settings.seo, ...result.settings.legal, ...result.settings.custom_code });
     aiForm.setFieldsValue(result.settings.ai);
     webhook.setFieldsValue(result.settings.webhook);
@@ -333,7 +333,7 @@ export function Settings() {
       <Form form={site} layout="vertical" onFinish={(values) => void save({ site: values })}>
         <Form.Item name="name" label="网站名称" rules={[{ required: true, message: "请输入网站名称" }]}><Input maxLength={80} /></Form.Item>
         <Form.Item name="tagline" label="网站副标题"><Input maxLength={160} /></Form.Item>
-        <Form.Item name="primary_domain" label="主要域名" extra="用于生成支付宝通知和回跳地址；留空则使用当前访问域名"><Input placeholder="https://example.com" /></Form.Item>
+        <Form.Item name="primary_domain" label="主要域名" extra="用于支付通知、回跳和微信网页授权；请填写正式 HTTPS 域名，留空使用当前访问域名"><Input placeholder="https://example.com" /></Form.Item>
         <Button type="primary" htmlType="submit">保存网站设置</Button>
       </Form>
     </Card>
@@ -366,16 +366,21 @@ export function Settings() {
       <Alert
         type="info"
         showIcon
-        message="需要微信支付商户号（API v3）。PC 浏览器使用 Native 扫码支付，手机浏览器使用 H5 支付；请先在商户平台开通对应产品。"
+        message="支持 Native 扫码、手机浏览器 H5 和微信内 JSAPI 支付；请先在商户平台开通对应产品。"
         description="配置顺序：商户平台 → API 安全 中获取 APIv3 密钥、商户证书序列号和商户私钥（apiclient_key.pem）。使用微信支付公钥模式的商户请同时填写微信支付公钥与公钥 ID。"
         style={{ marginBottom: 16 }}
       />
       <Form form={wechat} layout="vertical" onFinish={(values) => void save({ wechat: values })}>
         <Form.Item name="enabled" label="启用微信支付" valuePropName="checked"><Switch /></Form.Item>
+        <Form.Item name="jsapi_enabled" label="启用微信内支付（JSAPI）" valuePropName="checked" extra="开启后微信内自动授权并调起支付；未开启时微信内展示扫码二维码。"><Switch /></Form.Item>
         <Row gutter={[16, 0]}>
-          <Col xs={24} md={12}><Form.Item name="app_id" label="AppID" extra="与商户号绑定的公众号 / 小程序 / 开放平台应用 AppID"><Input /></Form.Item></Col>
+          <Col xs={24} md={12}><Form.Item name="app_id" label="AppID" extra="启用 JSAPI 时必须填写与商户号绑定的公众号 AppID"><Input /></Form.Item></Col>
           <Col xs={24} md={12}><Form.Item name="mch_id" label="商户号"><Input /></Form.Item></Col>
         </Row>
+        <Form.Item name="app_secret" label={"公众号 AppSecret" + (data?.wechat.app_secret_configured ? "（已配置，留空不修改）" : "")} extra="JSAPI 网页授权使用，必须与上方公众号 AppID 配套；加密保存在服务端。">
+          <Input.Password autoComplete="new-password" />
+        </Form.Item>
+        <Alert type="info" showIcon message="JSAPI 上线前需配置授权域名" description="在微信公众平台配置本网站域名为网页授权域名；在商户平台配置支付授权目录为 https://你的域名/payment/。请完成公众号与商户号绑定，并在网站设置中填写相同的正式 HTTPS 主域名。" style={{ marginBottom: 16 }} />
         <Form.Item name="mch_serial_no" label="商户证书序列号" extra="商户平台 → API 安全 → 商户证书序列号"><Input /></Form.Item>
         <Form.Item
           label={"APIv3 密钥" + (data?.wechat.api_v3_key_configured ? "（已配置，留空不修改）" : "")}

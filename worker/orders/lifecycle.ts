@@ -34,24 +34,26 @@ export type OrderDeletionResult = {
   message?: string;
 };
 
-export async function deletePaymentOrder(env: Env, orderNoValue: string): Promise<OrderDeletionResult> {
+export async function deletePaymentOrder(env: Env, orderNoValue: string, options: { force?: boolean } = {}): Promise<OrderDeletionResult> {
   const order = await loadPaymentOrder(env, orderNoValue);
   if (!order) return { order: null, deleted: false, message: "订单不存在" };
 
   const deletable = order.status === "closed"
     || order.status === "refunded"
     || (order.status === "paid" && order.amount_cents === 0 && (order.refunded_cents ?? 0) === 0);
-  if (!deletable) {
+  if (!options.force && !deletable) {
     return { order, deleted: false, message: "订单必须已关闭或已全额退款后才能删除" };
   }
 
   const result = await env.DB.prepare(
-    "DELETE FROM orders WHERE id=? AND (status='closed' OR status='refunded' OR (status='paid' AND amount_cents=0 AND refunded_cents=0))",
+    options.force
+      ? "DELETE FROM orders WHERE id=?"
+      : "DELETE FROM orders WHERE id=? AND (status='closed' OR status='refunded' OR (status='paid' AND amount_cents=0 AND refunded_cents=0))",
   ).bind(order.id).run();
   if (result.meta.changes !== 1) {
     return { order: await loadPaymentOrder(env, orderNoValue), deleted: false, message: "订单状态已变化，请刷新后重试" };
   }
-  return { order, deleted: true, message: "订单已删除" };
+  return { order, deleted: true, message: options.force ? "订单已强制删除" : "订单已删除" };
 }
 
 export async function markOrderPaid(env: Env, order: PaymentOrder, tradeNo: string, buyerId: string | null): Promise<boolean> {
