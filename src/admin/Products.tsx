@@ -18,6 +18,29 @@ export function Products() {
   const [selectedProduct, setSelectedProduct] = useState<string>();
   const [productForm] = Form.useForm<ProductForm>();
   const [planForm] = Form.useForm<PlanForm>();
+  const [aiPoints, setAiPoints] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+
+  async function generateAiCopy() {
+    const name = productForm.getFieldValue("name") as string | undefined;
+    if (!name?.trim()) {
+      message.warning("请先填写产品名称");
+      return;
+    }
+    setAiGenerating(true);
+    try {
+      const result = await api<{ copy: { summary: string; description: string } }>("/api/admin/ai/product-copy", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim(), points: aiPoints }),
+      });
+      productForm.setFieldsValue({ summary: result.copy.summary, description: result.copy.description });
+      message.success("AI 文案已填入表单，可修改后保存");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "AI 生成失败");
+    } finally {
+      setAiGenerating(false);
+    }
+  }
 
   const load = () => api<{ products: Product[]; plans: Plan[] }>("/api/admin/products").then((data) => {
     setProducts(data.products);
@@ -119,6 +142,10 @@ export function Products() {
     </Space>
 
     <Modal title={editingProduct ? "编辑产品" : "新增产品"} open={productOpen} onCancel={() => setProductOpen(false)} onOk={() => productForm.submit()}>
+      <Card size="small" title="✨ AI 生成文案" style={{ marginBottom: 16 }}>
+        <Input.TextArea rows={2} value={aiPoints} onChange={(event) => setAiPoints(event.target.value)} placeholder="输入产品卖点（每行一条），AI 将生成一句话介绍与详细介绍" />
+        <Button style={{ marginTop: 8 }} size="small" type="primary" ghost loading={aiGenerating} onClick={() => void generateAiCopy()}>生成并填入表单</Button>
+      </Card>
       <Form form={productForm} layout="vertical" onFinish={saveProduct}>
         <Form.Item name="name" label="产品名称" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="slug" label="Slug" rules={[{ required: true, pattern: /^[a-z0-9-]+$/ }]}><Input /></Form.Item>

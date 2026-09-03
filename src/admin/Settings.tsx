@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
-import { Alert, Button, Card, Checkbox, Col, Form, Input, Row, Select, Space, Switch, Tabs, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Form, Input, Progress, Row, Select, Space, Switch, Tabs, Typography, message } from "antd";
 import type { FormInstance } from "antd";
 import { api } from "../shared/api";
 import { defaultTheme, type SiteFooterSettings, type SiteHeaderSettings, type SiteThemeSettings } from "../editor/site";
+
+type AiUsage = { day: string; neurons_used: number; calls: number; limit: number };
 
 type SettingsData = {
   site: { name: string; tagline: string; primary_domain: string; theme: SiteThemeSettings; header: SiteHeaderSettings; footer: SiteFooterSettings };
@@ -12,6 +14,7 @@ type SettingsData = {
   seo: { keywords: string; default_og_image: string; robots_allow: boolean };
   legal: { icp_no: string; copyright: string };
   custom_code: { head_html: string; body_html: string };
+  ai: { enabled: boolean; model: string };
   webhook: { enabled: boolean; url: string; events: string[]; secret_configured: boolean };
 };
 
@@ -284,7 +287,11 @@ export function Settings() {
   const [alipay] = Form.useForm();
   const [wechat] = Form.useForm();
   const [seoForm] = Form.useForm<SeoFormValues>();
+  const [aiForm] = Form.useForm<{ enabled?: boolean; model?: string }>();
+  const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
   const [webhook] = Form.useForm();
+
+  const loadAiUsage = () => api<{ usage: AiUsage }>("/api/admin/ai/usage").then((result) => setAiUsage(result.usage)).catch(() => setAiUsage(null));
 
   const load = async () => {
     const result = await api<{ settings: SettingsData }>("/api/admin/settings");
@@ -298,7 +305,9 @@ export function Settings() {
     alipay.setFieldsValue(result.settings.alipay);
     wechat.setFieldsValue(result.settings.wechat);
     seoForm.setFieldsValue({ ...result.settings.seo, ...result.settings.legal, ...result.settings.custom_code });
+    aiForm.setFieldsValue(result.settings.ai);
     webhook.setFieldsValue(result.settings.webhook);
+    void loadAiUsage();
   };
 
   useEffect(() => { void load(); }, []);
@@ -435,6 +444,37 @@ export function Settings() {
     </Form>
   );
 
+  const aiTab = (
+    <Form form={aiForm} layout="vertical" onFinish={(values) => void save({ ai: values })}>
+      <Card title="AI 内容助手" className="settings-card" style={{ marginBottom: 16 }}>
+        <Alert
+          type="info"
+          showIcon
+          message="基于 Cloudflare Workers AI，免费额度每日 10,000 Neurons"
+          description="本系统内置 9,900 Neurons/天 的硬上限（写入代码、不可调高）：每次调用先按上界原子预留额度、再按实际用量结算，数学上不可能超量——免费计划永不触顶，付费计划永不扣费。额度每天 UTC 0 点重置。"
+          style={{ marginBottom: 16 }}
+        />
+        <Form.Item name="enabled" label="启用 AI 助手" valuePropName="checked" extra="启用后可在产品、页面编辑器和素材库中使用 AI 生成文案、SEO 信息与图片描述"><Switch /></Form.Item>
+        <Form.Item name="model" label="生成模型">
+          <Select options={[{ value: "@cf/meta/llama-3.1-8b-instruct-fp8-fast", label: "快速 · Llama 3.1 8B（推荐，约 21 Neurons/次）" }, { value: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", label: "强力 · Llama 3.3 70B（约 123 Neurons/次）" }]} />
+        </Form.Item>
+        <Button type="primary" htmlType="submit">保存 AI 设置</Button>
+      </Card>
+      <Card title="今日用量" className="settings-card" extra={<Button size="small" onClick={() => void loadAiUsage()}>刷新</Button>}>
+        {aiUsage ? (
+          <>
+            <Progress
+              percent={Math.min(100, Math.round((aiUsage.neurons_used / aiUsage.limit) * 1000) / 10)}
+              status={aiUsage.neurons_used >= aiUsage.limit ? "exception" : "active"}
+              format={() => `${aiUsage.neurons_used} / ${aiUsage.limit} Neurons`}
+            />
+            <Typography.Text type="secondary">今日已调用 {aiUsage.calls} 次 · 上限 {aiUsage.limit} Neurons（每日 UTC 0 点重置）</Typography.Text>
+          </>
+        ) : <Typography.Text type="secondary">用量加载失败，请刷新重试</Typography.Text>}
+      </Card>
+    </Form>
+  );
+
   const webhookTab = (
     <Card title="业务 Webhook" className="settings-card">
       <Alert type="info" showIcon message="支付成功后系统将事件放入 Cloudflare Queue，再异步 POST 到这里配置的业务系统。" style={{ marginBottom: 16 }} />
@@ -463,6 +503,7 @@ export function Settings() {
         { key: "alipay", label: "支付宝支付", children: alipayTab },
         { key: "wechat", label: "微信支付", children: wechatTab },
         { key: "seo", label: "SEO 与优化", children: seoTab },
+        { key: "ai", label: "AI 助手", children: aiTab },
         { key: "webhook", label: "Webhook", children: webhookTab },
       ]} />
     </>

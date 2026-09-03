@@ -13,6 +13,7 @@
 - **订单运营**：主动对账同步、超时关单、部分退款 / 全额退款、批量查询 / 关闭 / 删除。
 - **对外 Webhook**：支付成功后经 Cloudflare Queue 投递，HMAC-SHA256 签名、指数退避重试、投递日志与手动重发。
 - **R2 素材库**：图片上传与页面区块绑定。
+- **AI 内容助手**（基于 Cloudflare Workers AI）：产品文案、页面区块文案、SEO 元信息与图片 alt 中文描述一键生成；内置每日 9,900 Neurons 硬护栏，永不超出免费额度。
 - **站点视觉配置**：主题色、字体、布局、全局 Header/Footer，实时预览。
 - **SEO 与站点优化**：服务端注入页面标题、描述、关键词、Open Graph、规范链接与结构化数据（百度等不执行脚本的搜索引擎也能正确抓取）；自动生成 robots.txt 与 sitemap.xml；页面级关键词与 noindex；ICP 备案与版权展示；支持接入百度统计 / Google Analytics 等自定义代码。
 
@@ -103,6 +104,8 @@ npm run db:migrate:local
 npm run dev
 ```
 
+> 本地 dev 需要能访问 Cloudflare 远程会话（AI 助手的 Workers AI binding 在本地也走云端推理）：首次运行前执行 `npx wrangler login`，或在环境变量中提供 `CLOUDFLARE_API_TOKEN`。不登录时 dev server 无法启动。
+
 `.dev.vars` 内容：
 
 ```dotenv
@@ -179,6 +182,27 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 - `https://<你的域名>/robots.txt` —— 按收录设置生成，并声明站点地图
 - `https://<你的域名>/sitemap.xml` —— 自动列出所有已发布且未禁止收录的页面
+
+## AI 内容助手（Workers AI）
+
+在 **系统设置 → AI 助手** 中启用后（默认关闭），后台提供四类中文内容生成，全部仅管理员可触发：
+
+| 功能 | 位置 | 说明 |
+|---|---|---|
+| 产品文案 | 产品编辑弹窗 | 输入卖点 → 生成一句话介绍与详细介绍 |
+| SEO 元信息 | 页面编辑器 → 页面设置 | 基于页面草稿生成 SEO 标题 / 描述 / 关键词 |
+| 区块文案 | 页面编辑器 → ✨ AI 区块文案 | 为 Hero / Features / FAQ / Text / CTA 生成字段内容，可复制或追加到草稿 |
+| 图片描述 | 素材库 → ✨ 生成 alt | 视觉模型为 R2 图片生成中文替代文字 |
+
+**免费额度硬护栏（代码级，不可调高）**：
+
+- 每日上限 **9,900 Neurons**（免费额度 10,000/天，留 1% 余量），写在 `worker/ai.ts` 中；
+- 每次调用先按**保守上界**（输入按 1 字 ≈ 2 token 放大、含 max_tokens 上限、×1.5 安全系数）通过 D1 条件更新**原子预留**额度，调用后按响应 `usage` 的实际 token 结算回扣——累计消耗在数学上不可能超过上限；
+- Workers Free 计划永不触顶报错，Workers Paid 计划永不产生 AI 账单；额度每天 UTC 0 点重置；
+- 默认模型为 Llama 3.1 8B FP8 Fast（约 21 Neurons / 次生成），可在后台切换 Llama 3.3 70B Fast（约 123 Neurons / 次）；图片描述使用 Llama 3.2 11B Vision（每张预留 150 Neurons）；
+- 后台「AI 助手 → 今日用量」实时展示已用 Neurons 与调用次数。
+
+无需任何 API Key：Workers AI 以 binding 形式随 Worker 自动可用（`wrangler.jsonc` 中的 `ai` 绑定）。
 
 ## 支付链路
 

@@ -1,6 +1,16 @@
 import { isAdmin, assertSameOrigin } from "../auth/session";
 import { bad, bodyJson, id, json, nowIso } from "../http";
 import { listSettings, setSetting } from "../db/settings";
+import {
+  AI_MODEL_OPTIONS,
+  DEFAULT_AI_MODEL,
+  AiBudgetExceededError,
+  describeAssetImage,
+  generateProductCopy,
+  generateSectionProps,
+  generateSeoMeta,
+  getAiUsage,
+} from "../ai";
 import { deletePaymentOrder, closeProviderOrder, loadPaymentOrder, syncProviderOrder } from "../orders/lifecycle";
 import { issueRefund, syncRefund } from "../orders/refunds";
 import type { WebhookQueueMessage } from "../webhook/outbound";
@@ -58,6 +68,10 @@ async function adminSettings(env: Env): Promise<Record<string, unknown>> {
     seo: parseSettingJson(value("site.seo"), { keywords: "", default_og_image: "", robots_allow: true }, normalizeSeoSettings),
     legal: parseSettingJson(value("site.legal"), { icp_no: "", copyright: "" }, normalizeLegalSettings),
     custom_code: parseSettingJson(value("site.custom_code"), { head_html: "", body_html: "" }, normalizeCustomCodeSettings),
+    ai: {
+      enabled: value("ai.enabled", "false") === "true",
+      model: value("ai.model", DEFAULT_AI_MODEL),
+    },
     webhook: {
       enabled: value("webhook.enabled", "false") === "true",
       url: value("webhook.url"),
@@ -102,6 +116,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
       seo?: Record<string, unknown>;
       legal?: Record<string, unknown>;
       custom_code?: Record<string, unknown>;
+      ai?: { enabled?: boolean; model?: string };
       webhook?: { enabled?: boolean; url?: string; events?: string[]; secret?: string; regenerate_secret?: boolean };
     }>(request);
     if (input.wechat?.api_v3_key?.trim() && input.wechat.api_v3_key.trim().length !== 32) {
@@ -137,6 +152,14 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     if (input.seo) writes.push(setSetting(env, "site.seo", JSON.stringify(normalizeSeoSettings(input.seo))));
     if (input.legal) writes.push(setSetting(env, "site.legal", JSON.stringify(normalizeLegalSettings(input.legal))));
     if (input.custom_code) writes.push(setSetting(env, "site.custom_code", JSON.stringify(normalizeCustomCodeSettings(input.custom_code))));
+    if (input.ai) {
+      if (typeof input.ai.enabled === "boolean") writes.push(setSetting(env, "ai.enabled", String(input.ai.enabled)));
+      if (typeof input.ai.model === "string") {
+        const allowed = AI_MODEL_OPTIONS.some((option) => option.value === input.ai?.model);
+        if (!allowed) return bad("不支持的 AI 模型");
+        writes.push(setSetting(env, "ai.model", input.ai.model));
+      }
+    }
     if (input.webhook) {
       if (typeof input.webhook.enabled === "boolean") writes.push(setSetting(env, "webhook.enabled", String(input.webhook.enabled)));
       if (typeof input.webhook.url === "string") {
@@ -153,6 +176,58 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
     }
     await Promise.all(writes);
     return json({ ok: true, settings: await adminSettings(env) });
+  }
+
+  function aiError(error: unknown): Response {
+    const message = error instanceof Error ? error.message : "AI 调用失败";
+    return bad(message, error instanceof AiBudgetExceededError ? 429 : 502);
+  }
+
+  if (pathname === "/api/admin/ai/usage" && request.method === "GET") {
+    return json({ ok: true, usage: await getAiUsage(env) });
+  }
+  if (pathname === "/api/admin/ai/product-copy" && request.method === "POST") {
+    const input = await bodyJson<{ name?: string; points?: string }>(request);
+    if (!input.name?.trim()) return bad("请先填写产品名称");
+    try {
+      return json({ ok: true, copy: await generateProductCopy(env, { name: input.name.trim(), points: input.points ?? "" }) });
+    } catch (error) {
+      return aiError(error);
+    }
+  }
+  if (pathname === "/api/admin/ai/seo" && request.method === "POST") {
+    const input = await bodyJson<{ page_title?: string; page_text?: string }>(request);
+    const pageText = typeof input.page_text === "string" ? input.page_text.trim() : "";
+    if (!pageText) return bad("页面还没有内容，先添加区块再生成 SEO 信息");
+    try {
+      return json({ ok: true, seo: await generateSeoMeta(env, { pageTitle: input.page_title?.trim() || "", pageText }) });
+    } catch (error) {
+      return aiError(error);
+    }
+  }
+  if (pathname === "/api/admin/ai/section" && request.method === "POST") {
+    const input = await bodyJson<{ component?: string; brief?: string }>(request);
+    if (!input.component) return bad("请选择组件类型");
+    try {
+      return json({ ok: true, props: await generateSectionProps(env, { component: input.component, brief: input.brief ?? "" }) });
+    } catch (error) {
+      return aiError(error);
+    }
+  }
+  if (pathname === "/api/admin/ai/alt-text" && request.method === "POST") {
+    const input = await bodyJson<{ asset_id?: string }>(request);
+    if (!input.asset_id) return bad("缺少素材 ID");
+    const asset = await env.DB.prepare("SELECT object_key,mime_type,size_bytes FROM assets WHERE id=?").bind(input.asset_id).first<{ object_key: string; mime_type: string; size_bytes: number }>();
+    if (!asset || !asset.mime_type.startsWith("image/")) return bad("素材不存在或不是图片", 404);
+    if (asset.size_bytes > 5 * 1024 * 1024) return bad("图片超过 5MB，暂不支持生成描述");
+    const object = await env.MEDIA.get(asset.object_key);
+    if (!object) return bad("图片文件不存在", 404);
+    try {
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      return json({ ok: true, alt: await describeAssetImage(env, bytes) });
+    } catch (error) {
+      return aiError(error);
+    }
   }
 
   if (pathname === "/api/admin/webhook/secret" && request.method === "POST") {

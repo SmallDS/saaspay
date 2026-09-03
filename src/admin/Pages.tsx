@@ -106,6 +106,12 @@ function PageEditor({ page, onSaved }: { page: EditorPage; onSaved: () => Promis
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [checksOpen, setChecksOpen] = useState(false);
   const [checks, setChecks] = useState<CheckItem[]>([]);
+  const [aiSeoLoading, setAiSeoLoading] = useState(false);
+  const [aiSectionOpen, setAiSectionOpen] = useState(false);
+  const [aiSectionComponent, setAiSectionComponent] = useState("Hero");
+  const [aiSectionBrief, setAiSectionBrief] = useState("");
+  const [aiSectionProps, setAiSectionProps] = useState<Record<string, unknown> | null>(null);
+  const [aiSectionLoading, setAiSectionLoading] = useState(false);
 
   const persist = useCallback(async (data: Data, meta?: PageMeta, createVersion = false) => {
     const values = meta ?? metaForm.getFieldsValue();
@@ -165,6 +171,56 @@ function PageEditor({ page, onSaved }: { page: EditorPage; onSaved: () => Promis
     setChecksOpen(true);
   }
 
+  async function generateAiSeo() {
+    const pageText = extractPageText(latestData.current);
+    if (!pageText) {
+      message.warning("页面还没有内容，先添加区块再生成 SEO 信息");
+      return;
+    }
+    setAiSeoLoading(true);
+    try {
+      const result = await api<{ seo: { seo_title: string; seo_description: string; seo_keywords: string } }>("/api/admin/ai/seo", {
+        method: "POST",
+        body: JSON.stringify({ page_title: metaForm.getFieldValue("title"), page_text: pageText }),
+      });
+      metaForm.setFieldsValue(result.seo);
+      revision.current += 1;
+      setDirty(true);
+      scheduleAutosave(latestData.current);
+      message.success("AI SEO 信息已填入，将随草稿自动保存");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "AI 生成失败");
+    } finally {
+      setAiSeoLoading(false);
+    }
+  }
+
+  async function generateAiSection() {
+    setAiSectionLoading(true);
+    try {
+      const result = await api<{ props: Record<string, unknown> }>("/api/admin/ai/section", {
+        method: "POST",
+        body: JSON.stringify({ component: aiSectionComponent, brief: aiSectionBrief }),
+      });
+      setAiSectionProps(result.props);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "AI 生成失败");
+    } finally {
+      setAiSectionLoading(false);
+    }
+  }
+
+  async function appendAiSection() {
+    if (!aiSectionProps) return;
+    const block = { type: aiSectionComponent, props: { id: crypto.randomUUID(), ...aiSectionProps } };
+    latestData.current = { ...latestData.current, content: [...(latestData.current.content ?? []), block] } as Data;
+    await persist(latestData.current);
+    message.success("已追加到草稿并保存");
+    setAiSectionOpen(false);
+    setAiSectionProps(null);
+    await onSaved();
+  }
+
   return <div className="editor-shell">
     <Card size="small" title="页面设置" style={{ marginBottom: 12 }}>
       <Form<PageMeta> form={metaForm} layout="vertical" initialValues={{ title: page.title, slug: page.slug, seo_title: page.seo_title, seo_description: page.seo_description, seo_keywords: page.seo_keywords, og_image: page.og_image, noindex: page.noindex === 1 }} onValuesChange={() => { revision.current += 1; setDirty(true); scheduleAutosave(latestData.current); }} onFinish={async (values) => { await persist(latestData.current, values); message.success("页面设置已保存"); }}>
@@ -177,7 +233,7 @@ function PageEditor({ page, onSaved }: { page: EditorPage; onSaved: () => Promis
           <Form.Item name="og_image" label="OG 分享图 URL"><Input placeholder="可从素材库复制图片地址" /></Form.Item>
           <Form.Item name="noindex" label="禁止搜索引擎收录" valuePropName="checked" extra="勾选后该页面输出 noindex，且不进入站点地图"><Switch /></Form.Item>
         </div>
-        <Space><Button htmlType="submit" loading={saving}>保存页面设置</Button><Button onClick={() => void persist(latestData.current, undefined, true)} loading={saving}>保存版本</Button></Space>
+        <Space><Button htmlType="submit" loading={saving}>保存页面设置</Button><Button onClick={() => void persist(latestData.current, undefined, true)} loading={saving}>保存版本</Button><Button loading={aiSeoLoading} onClick={() => void generateAiSeo()}>✨ AI 生成 SEO</Button><Button onClick={() => { setAiSectionProps(null); setAiSectionBrief(""); setAiSectionOpen(true); }}>✨ AI 区块文案</Button></Space>
       </Form>
     </Card>
     <div className="editor-hint">编辑内容会在停止操作约 1.2 秒后自动保存。顶部工具栏可以预览草稿、查看版本和进行发布前检查；真正上线请回到页面列表点击“发布”。</div>
@@ -210,11 +266,50 @@ function PageEditor({ page, onSaved }: { page: EditorPage; onSaved: () => Promis
     <Modal title="发布前检查" open={checksOpen} footer={<Button onClick={() => setChecksOpen(false)}>关闭</Button>} onCancel={() => setChecksOpen(false)}>
       <Space direction="vertical" style={{ width: "100%" }}>{checks.map((item, index) => <Alert key={`${item.text}-${index}`} type={item.level === "success" ? "success" : item.level === "warning" ? "warning" : "error"} message={item.text} showIcon />)}</Space>
     </Modal>
+
+    <Modal title="✨ AI 区块文案" open={aiSectionOpen} footer={null} onCancel={() => setAiSectionOpen(false)}>
+      <Space direction="vertical" style={{ width: "100%" }} size={12}>
+        <Form layout="vertical">
+          <Form.Item label="组件类型" style={{ marginBottom: 12 }}>
+            <Select value={aiSectionComponent} onChange={setAiSectionComponent} options={[
+              { value: "Hero", label: "Hero · 首屏主视觉" },
+              { value: "Features", label: "Features · 卖点网格" },
+              { value: "FAQ", label: "FAQ · 常见问题" },
+              { value: "Text", label: "Text · 图文段落" },
+              { value: "CTA", label: "CTA · 行动号召" },
+            ]} />
+          </Form.Item>
+          <Form.Item label="创作要点" style={{ marginBottom: 12 }}>
+            <Input.TextArea rows={3} value={aiSectionBrief} onChange={(event) => setAiSectionBrief(event.target.value)} placeholder="例如：面向中小团队的项目管理工具，强调简单上手、价格透明" />
+          </Form.Item>
+          <Button type="primary" loading={aiSectionLoading} onClick={() => void generateAiSection()}>{aiSectionProps ? "重新生成" : "生成"}</Button>
+        </Form>
+        {aiSectionProps ? <>
+          <Input.TextArea rows={8} readOnly value={JSON.stringify(aiSectionProps, null, 2)} />
+          <Space wrap>
+            <Button onClick={() => { void navigator.clipboard?.writeText(JSON.stringify(aiSectionProps, null, 2)); message.success("已复制，可粘贴到对应区块字段"); }}>复制 JSON</Button>
+            <Button type="primary" onClick={() => void appendAiSection()}>追加到草稿并保存</Button>
+          </Space>
+          <Typography.Text type="secondary">「追加」会把该区块添加到页面末尾并保存草稿，编辑器随后自动刷新。</Typography.Text>
+        </> : null}
+      </Space>
+    </Modal>
   </div>;
 }
 
 function cloneData(data: Data): Data {
   return JSON.parse(JSON.stringify(data)) as Data;
+}
+
+function extractPageText(data: Data): string {
+  const content = Array.isArray(data.content) ? data.content : [];
+  const parts: string[] = [];
+  for (const block of content) {
+    const value = block as { type?: string; props?: Record<string, unknown> };
+    const strings = Object.values(value.props ?? {}).filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    if (strings.length) parts.push(`[${value.type ?? "区块"}] ` + strings.join("；"));
+  }
+  return parts.join("\n");
 }
 
 function runPageChecks(data: Data, meta: Partial<PageMeta>): CheckItem[] {

@@ -44,6 +44,10 @@
 			}
 		]
 	},
+	// 本地开发时 AI binding 需要远程代理会话：先 `npx wrangler login` 或设置 CLOUDFLARE_API_TOKEN。
+	"ai": {
+		"binding": "AI"
+	},
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1
