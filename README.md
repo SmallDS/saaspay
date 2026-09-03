@@ -166,6 +166,8 @@ SETTINGS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 请在微信支付商户平台开通所需的 **Native 支付**、**H5 支付**、**JSAPI 支付** 产品。支付结果通知共用 `https://<你的域名>/api/payment/wechat/notify`，由系统自动生成。
 
+如通过 CDN / 反向代理访问，且回源时改写了域名，需要在 `wrangler.jsonc` 的 `vars.WECHAT_PAYMENT_TRUSTED_ORIGINS` 中列出浏览器实际访问的来源，例如 `["https://test.smallds.icu"]`。每项仅含协议、主机和非默认端口，不带路径或末尾斜杠；修改后重新部署。该名单仅用于微信下单接口的来源校验，使用精确匹配；其他域名、`Origin: null` 和未经配置的代理请求头不会被放行。它不替代微信商户平台的 H5 域名、公众号网页授权域名等配置。
+
 JSAPI 上线配置：
 
 1. 完成公众号与商户号的授权绑定，在后台填写公众号 AppID、AppSecret，并打开「启用微信内支付（JSAPI）」。

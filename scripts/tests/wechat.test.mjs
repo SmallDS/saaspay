@@ -294,6 +294,46 @@ test("payment origin fallback rejects foreign, opaque, conflicting and unverifia
   assert.equal(db.prepare("SELECT count(*) n FROM wechat_oauth_states").get().n, 0);
 });
 
+test("payment accepts the configured public origin when a proxy rewrites the upstream URL", async (t) => {
+  const { env, fetchMock } = await fixture(t);
+  const publicOrigin = "https://public-shop.example";
+  env.WECHAT_PAYMENT_TRUSTED_ORIGINS = [publicOrigin];
+  for (const headers of [{ origin: publicOrigin }, { referer: publicOrigin + "/checkout", "sec-fetch-site": "same-origin" }]) {
+    const request = paymentRequest("", "Windows Chrome");
+    request.headers.delete("origin");
+    for (const [key, value] of Object.entries(headers)) request.headers.set(key, value);
+    fetchMock.mock.mockImplementation(async (url, init) => {
+      assert.equal(new URL(url).pathname, "/v3/pay/transactions/native");
+      assert.equal(JSON.parse(init.body).out_trade_no, orderNo);
+      return Response.json({ code_url: "weixin://pay/test" });
+    });
+    const response = await handle(request, env);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).mode, "native");
+  }
+  assert.equal(fetchMock.mock.callCount(), 2);
+});
+
+test("trusted payment domains require exact matching and cannot be supplied through proxy headers", async (t) => {
+  const { env, fetchMock } = await fixture(t);
+  const publicOrigin = "https://public-shop.example";
+  env.WECHAT_PAYMENT_TRUSTED_ORIGINS = [publicOrigin];
+  for (const source of ["https://other.example", publicOrigin + ".other.example", "http://public-shop.example", publicOrigin + ":8443", "null"]) {
+    const request = paymentRequest();
+    request.headers.set("origin", source);
+    request.headers.set("x-forwarded-host", new URL(source === "null" ? publicOrigin : source).host);
+    request.headers.set("x-forwarded-proto", "https");
+    request.headers.set("referer", publicOrigin + "/");
+    assert.equal((await handle(request, env)).status, 403);
+  }
+  delete env.WECHAT_PAYMENT_TRUSTED_ORIGINS;
+  const unconfigured = paymentRequest();
+  unconfigured.headers.set("origin", publicOrigin);
+  unconfigured.headers.set("x-forwarded-host", "public-shop.example");
+  assert.equal((await handle(unconfigured, env)).status, 403);
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
 test("invalid JSAPI provider responses fail without creating bridge parameters", async (t) => {
   const { env, fetchMock } = await fixture(t);
   for (const payload of [{}, { prepay_id: 42 }, { code: "APPID_MCHID_NOT_MATCH", message: "AppID未绑定" }]) {

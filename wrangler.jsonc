@@ -6,6 +6,10 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	// 代理对外使用 test 域名、回源使用 cf 域名时，明确允许浏览器的实际支付来源。
+	"vars": {
+		"WECHAT_PAYMENT_TRUSTED_ORIGINS": ["https://test.smallds.icu"]
+	},
 	// Worker 优先接管全部请求：API/媒体直接处理，静态资源经 ASSETS binding 透传，
 	// HTML 页面注入 SEO meta/JSON-LD 后返回（百度等爬虫不执行 JS，必须服务端输出）。
 	"assets": {

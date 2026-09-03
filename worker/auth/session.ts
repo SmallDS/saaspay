@@ -85,19 +85,21 @@ export async function isAdmin(request: Request, env: Env): Promise<boolean> {
   }
 }
 
-export function assertSameOrigin(request: Request, options: { allowBrowserFallback?: boolean } = {}): boolean {
+export function assertSameOrigin(request: Request, options: { allowBrowserFallback?: boolean; trustedOrigins?: readonly string[] } = {}): boolean {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
   const expectedOrigin = new URL(request.url).origin;
+  // Public proxy domains must be configured by the server, never taken from forwarded headers.
+  const allowedOrigins = new Set([expectedOrigin, ...(options.trustedOrigins ?? [])]);
   const origin = request.headers.get("Origin");
-  // An explicit foreign or opaque Origin must never be overridden by fallback headers.
-  if (origin !== null) return origin === expectedOrigin;
+  // An explicit untrusted or opaque Origin must never be overridden by fallback headers.
+  if (origin !== null) return origin !== "null" && allowedOrigins.has(origin);
   if (!options.allowBrowserFallback) return false;
 
   const fetchSite = request.headers.get("Sec-Fetch-Site");
   if (fetchSite !== null && fetchSite !== "same-origin") return false;
   const referer = request.headers.get("Referer");
   if (referer !== null) {
-    try { return new URL(referer).origin === expectedOrigin; } catch { return false; }
+    try { return allowedOrigins.has(new URL(referer).origin); } catch { return false; }
   }
   return fetchSite === "same-origin";
 }
