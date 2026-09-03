@@ -104,7 +104,7 @@ test("published heading is present in the initial body for browsers and Bingbot 
   const data = { root: { props: {} }, content: [{ type: "Hero", props: { id: "hero", title: "全新的配镜工作台", buttonHref: "#pricing" } }] };
   fixture.publish(data);
   const html = await fixture.html();
-  assert.match(html, /<body>\s*<div id="root"><main[^>]*><h1 data-page-heading>全新的配镜工作台<\/h1>/);
+  assert.match(html, /<body>[\s\S]*<main>[\s\S]*<h1 data-page-heading>全新的配镜工作台<\/h1>[\s\S]*<\/main>[\s\S]*<\/body>/);
   assert.equal((html.match(/<h1\b/g) ?? []).length, 1);
   assert.doesNotMatch(html, /未发布的草稿标题|display:\s*none|<noscript/);
   assert.match(html, /<script type="module" src="\/src\/main.tsx"><\/script>/);

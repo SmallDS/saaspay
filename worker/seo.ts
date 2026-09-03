@@ -114,7 +114,7 @@ export function injectSeoIntoHtml(html: string, headTags: string, customBody: st
   let output = html;
   if (pageHeading) {
     output = output.replace(/<div\b([^>]*\bid=["']root["'][^>]*)>\s*<\/div>/i,
-      (_match, attributes: string) => `<div${attributes}><main class="site-loading"><h1 data-page-heading>${escapeHtml(pageHeading)}</h1></main></div>`);
+      (_match, attributes: string) => `<div${attributes}><div class="public-site"><header class="site-header" aria-hidden="true"><span class="skeleton-bar" style="width:140px;height:24px"></span></header><main><section class="block hero-block"><div class="container hero-inner"><div class="hero-copy"><span class="skeleton-bar skeleton-eyebrow" aria-hidden="true" style="width:104px;height:30px"></span><h1 data-page-heading>${escapeHtml(pageHeading)}</h1><span class="skeleton-bar skeleton-description" aria-hidden="true" style="width:62%;height:22px"></span><span class="skeleton-bar skeleton-button" aria-hidden="true" style="width:128px;height:40px"></span></div></div></section></main></div></div>`);
   }
   const titleMatch = /<title>[\s\S]*?<\/title>/i.exec(headTags);
   if (titleMatch) {

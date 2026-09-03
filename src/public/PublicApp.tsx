@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Card, Form, Input, Modal, Radio, Result, Skeleton, Space, Spin, Tag, message } from "antd";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, Button, Card, Form, Input, Modal, Radio, Result, Space, Tag, message } from "antd";
 import { Render, type Data } from "@puckeditor/core";
 import QRCode from "qrcode";
-import { api, money } from "../shared/api";
+import { api, ApiError, readApi, money } from "../shared/api";
+import { useResource } from "../shared/useResource";
+import { CheckoutSkeleton, FooterSkeleton, HeaderSkeleton, ResultSkeleton, SkeletonBar, StorefrontSkeleton } from "../shared/LoadingStates";
+import { LoadError } from "../shared/LoadError";
 import { getPageHeading } from "../shared/page-heading";
 import { canonicalPageUrl, siteImageUrl } from "../shared/site-url";
 import { isWechatBrowser, type WechatPaymentResponse } from "../shared/wechat";
@@ -64,33 +67,38 @@ export function PublicApp({ initialPageHeading = "" }: { initialPageHeading?: st
 }
 
 function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
-  const [loading, setLoading] = useState(true);
-  const [site, setSite] = useState<Site>(initialSite);
-  const [products, setProducts] = useState<StorefrontProduct[]>([]);
-  const [plans, setPlans] = useState<StorefrontPlan[]>([]);
   const [assets, setAssets] = useState<StorefrontAsset[]>([]);
-  const [page, setPage] = useState<PagePayload | null>(null);
 
   const slug = useMemo(() => {
     const value = location.pathname.replace(/^\/+|\/+$/g, "");
     return value || "home";
   }, []);
 
-  useEffect(() => {
-    Promise.all([
-      api<{ site: Partial<Site> }>("/api/public/site"),
-      api<{ products: StorefrontProduct[]; plans: StorefrontPlan[] }>("/api/public/products"),
-      api<{ assets: StorefrontAsset[] }>("/api/public/assets").catch(() => ({ assets: [] })),
-      api<{ page: PagePayload }>(`/api/public/pages/${encodeURIComponent(slug)}`).catch(() => ({ page: null as unknown as PagePayload })),
-    ]).then(([siteData, catalog, assetData, pageData]) => {
-      setSite(mergeSite(siteData.site));
-      setProducts(catalog.products ?? []);
-      setPlans(catalog.plans ?? []);
-      setAssets(assetData.assets ?? []);
-      setPage(pageData.page);
-    }).catch((error) => message.error(error instanceof Error ? error.message : "页面加载失败"))
-      .finally(() => setLoading(false));
+  const loader = useCallback(async (signal: AbortSignal) => {
+    const [siteData, catalog, pageData] = await Promise.all([
+      readApi<{ site: Partial<Site> }>("/api/public/site", signal),
+      readApi<{ products: StorefrontProduct[]; plans: StorefrontPlan[] }>("/api/public/products", signal),
+      readApi<{ page: PagePayload | null }>(`/api/public/pages/${encodeURIComponent(slug)}`, signal).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) return { page: null };
+        throw error;
+      }),
+    ]);
+    return { site: mergeSite(siteData.site), products: catalog.products ?? [], plans: catalog.plans ?? [], page: pageData.page };
   }, [slug]);
+  const resource = useResource(loader);
+  const { loading } = resource;
+  const site = resource.data?.site ?? initialSite;
+  const products = resource.data?.products ?? [];
+  const plans = resource.data?.plans ?? [];
+  const page = resource.data?.page ?? null;
+
+  // Asset metadata enhances image blocks but must not hold up the entire page.
+  useEffect(() => {
+    const controller = new AbortController();
+    void readApi<{ assets: StorefrontAsset[] }>("/api/public/assets", controller.signal)
+      .then((result) => { if (!controller.signal.aborted) setAssets(result.assets ?? []); }).catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -111,7 +119,7 @@ function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
   }, [site.theme]);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || resource.error) return;
     const origin = site.public_origin || location.origin;
     const title = page?.seo_title || page?.title || site.name;
     const description = page?.seo_description || site.tagline;
@@ -130,13 +138,14 @@ function Storefront({ initialPageHeading }: { initialPageHeading: string }) {
       document.head.appendChild(link);
     }
     link.href = canonical;
-  }, [page, site, slug, loading]);
+  }, [page, site, slug, loading, resource.error]);
 
   function buy(planId: string) {
     location.href = "/checkout?plan_id=" + encodeURIComponent(planId);
   }
 
-  if (loading) return <main className="site-loading">{initialPageHeading ? <h1>{initialPageHeading}</h1> : null}<Skeleton active paragraph={{ rows: 8 }} /></main>;
+  if (loading && !resource.data) return <StorefrontSkeleton title={initialPageHeading} />;
+  if (resource.error && !resource.data) return <div className="public-site">{initialPageHeading ? <section className="block hero-block"><div className="container"><h1>{initialPageHeading}</h1></div></section> : null}<LoadError message={resource.error} onRetry={resource.retry} /></div>;
 
   let data: Data = defaultPageData;
   if (page) {
@@ -164,30 +173,29 @@ function contactType(value: string): "phone" | "email" | null {
 
 function CheckoutPage() {
   const planId = useMemo(() => new URLSearchParams(location.search).get("plan_id") ?? "", []);
-  const [loading, setLoading] = useState(true);
-  const [site, setSite] = useState<Site>(initialSite);
-  const [plan, setPlan] = useState<StorefrontPlan | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [methods, setMethods] = useState<PaymentMethods>({ alipay: true, wechat: false });
   const [payMethod, setPayMethod] = useState<"alipay" | "wechat">("alipay");
   const [wechatPay, setWechatPay] = useState<{ orderNo: string; qrImage: string } | null>(null);
   const [pendingWechatOrder, setPendingWechatOrder] = useState(() => sessionStorage.getItem(PENDING_WECHAT_ORDER_KEY) ?? "");
   const [form] = Form.useForm<CheckoutFormValues>();
 
-  useEffect(() => {
-    Promise.all([
-      api<{ site: Partial<Site> }>("/api/public/site"),
-      api<{ plans: StorefrontPlan[] }>("/api/public/products"),
-      api<{ methods: PaymentMethods }>("/api/public/payment-methods").catch(() => ({ methods: { alipay: true, wechat: false } })),
-    ]).then(([siteData, catalog, methodData]) => {
-      setSite(mergeSite(siteData.site));
-      setPlan((catalog.plans ?? []).find((item) => item.id === planId) ?? null);
-      const available = methodData.methods;
-      setMethods(available);
-      if (available.wechat && (!available.alipay || isWechatBrowser())) setPayMethod("wechat");
-    }).catch((error) => message.error(error instanceof Error ? error.message : "结账页加载失败"))
-      .finally(() => setLoading(false));
+  const loader = useCallback(async (signal: AbortSignal) => {
+    const [siteData, catalog, methodData] = await Promise.all([
+      readApi<{ site: Partial<Site> }>("/api/public/site", signal),
+      readApi<{ plans: StorefrontPlan[] }>("/api/public/products", signal),
+      readApi<{ methods: PaymentMethods }>("/api/public/payment-methods", signal),
+    ]);
+    return { site: mergeSite(siteData.site), plan: (catalog.plans ?? []).find((item) => item.id === planId) ?? null, methods: methodData.methods };
   }, [planId]);
+  const resource = useResource(loader);
+  const { loading } = resource;
+  const site = resource.data?.site ?? initialSite;
+  const plan = resource.data?.plan ?? null;
+  const methods = resource.data?.methods ?? { alipay: false, wechat: false };
+  useEffect(() => {
+    const available = resource.data?.methods;
+    if (available?.wechat && (!available.alipay || isWechatBrowser())) setPayMethod("wechat");
+  }, [resource.data]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -210,11 +218,12 @@ function CheckoutPage() {
   useEffect(() => {
     const orderNoValue = wechatPay?.orderNo;
     if (!orderNoValue) return;
+    const controller = new AbortController();
     let cancelled = false;
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
       try {
-        const result = await api<{ order: { status: string } }>("/api/orders/" + encodeURIComponent(orderNoValue));
+        const result = await readApi<{ order: { status: string } }>("/api/orders/" + encodeURIComponent(orderNoValue), controller.signal);
         if (cancelled) return;
         if (result.order.status === "paid" || result.order.status === "refunded") {
           location.href = "/payment/result?order_no=" + encodeURIComponent(orderNoValue);
@@ -229,7 +238,7 @@ function CheckoutPage() {
       if (!cancelled) timer = window.setTimeout(poll, 3000);
     };
     void poll();
-    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+    return () => { cancelled = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [wechatPay]);
 
   async function submitCheckout(values: CheckoutFormValues) {
@@ -285,14 +294,14 @@ function CheckoutPage() {
     }
   }
 
-  const content = loading ? <div className="checkout-loading"><Skeleton active paragraph={{ rows: 8 }} /></div> : !plan ? (
+  const content = loading && !resource.data ? <CheckoutSkeleton /> : resource.error && !resource.data ? <LoadError message={resource.error} onRetry={resource.retry} /> : !plan ? (
     <Result status="404" title="套餐不存在或已下架" subTitle="请返回商品页重新选择套餐。" extra={<Button type="primary" href="/">返回首页</Button>} />
   ) : wechatPay ? (
     <div className="wechat-pay-panel">
       <h2>微信扫码支付</h2>
       <p>{plan.product_name} · {plan.name} · {money(plan.amount_cents)}</p>
       <p className="muted">订单号：{wechatPay.orderNo}</p>
-      {wechatPay.qrImage ? <img src={wechatPay.qrImage} alt="微信支付二维码" /> : <Spin />}
+      <img src={wechatPay.qrImage} alt="微信支付二维码" />
       <p>请使用微信扫一扫完成支付，支付成功后页面会自动跳转。</p>
       <Button onClick={() => setWechatPay(null)}>返回重新选择支付方式</Button>
     </div>
@@ -362,7 +371,7 @@ function CheckoutPage() {
     </main>
   );
 
-  return <div className="public-site"><GlobalHeader site={site} />{content}<GlobalFooter site={site} /></div>;
+  return <div className="public-site">{resource.data ? <GlobalHeader site={site} /> : <HeaderSkeleton />}{content}{resource.data ? <GlobalFooter site={site} /> : <FooterSkeleton />}</div>;
 }
 
 function GlobalHeader({ site }: { site: Site }) {
@@ -389,6 +398,8 @@ function PaymentResult() {
   const [wechatNotice, setWechatNotice] = useState("");
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const [retrying, setRetrying] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [qrImage, setQrImage] = useState<string | null>(null);
@@ -398,21 +409,33 @@ function PaymentResult() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     let timer: number | undefined;
     async function poll() {
       if (!orderNo) { if (!cancelled) setLoading(false); return; }
       try {
-        const result = await api<{ order: Order }>("/api/orders/" + encodeURIComponent(orderNo));
+        const result = await readApi<{ order: Order }>("/api/orders/" + encodeURIComponent(orderNo), controller.signal);
         if (cancelled) return;
         setOrder(result.order);
+        setLoadError("");
         setLoading(false);
+        setRefreshing(false);
         if (result.order.status === "pending") timer = window.setTimeout(poll, 3000);
-      } catch {
-        if (!cancelled) { setOrder(null); setLoading(false); }
+      } catch (error) {
+        if (cancelled) return;
+        setLoading(false);
+        setRefreshing(false);
+        if (error instanceof ApiError && error.status === 404) {
+          setOrder(null);
+          setLoadError("");
+        } else {
+          setLoadError(error instanceof Error ? error.message : "订单状态暂时无法同步");
+          timer = window.setTimeout(poll, 5000);
+        }
       }
     }
     void poll();
-    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+    return () => { cancelled = true; controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [orderNo, refreshToken]);
 
   useEffect(() => {
@@ -455,21 +478,23 @@ function PaymentResult() {
       message.error(error instanceof Error ? error.message : "创建支付失败");
     } finally { setRetrying(false); }
   }
-  function refresh() { setLoading(true); setRefreshToken((value) => value + 1); }
+  function refresh() { setRefreshing(true); setRefreshToken((value) => value + 1); }
 
-  if (loading) return <div className="center"><Skeleton active /></div>;
+  if (loading || (refreshing && !order)) return <ResultSkeleton />;
+  if (!order && loadError) return <LoadError message={loadError} onRetry={refresh} />;
   if (!orderNo || !order) return <Result status="404" title="未找到订单" extra={<Button href="/">返回首页</Button>} />;
   if (order.status === "paid" && (order.refunded_cents ?? 0) > 0) return <Result status="info" title="订单已部分退款" subTitle={order.product_name + " · 已退款 " + money(order.refunded_cents ?? 0)} extra={<Button type="primary" href="/">返回首页</Button>} />;
   if (order.status === "paid") return <Result status="success" title="支付成功" subTitle={order.product_name + " · " + order.plan_name + " · " + money(order.amount_cents)} extra={<Button type="primary" href="/">返回首页</Button>} />;
   if (order.status === "refunded") return <Result status="info" title="订单已退款" subTitle={order.order_no} extra={<Button href="/">返回首页</Button>} />;
   if (order.status === "closed") return <Result status="warning" title="订单已关闭" subTitle="支付超时或订单已取消，请重新下单。" extra={<Button type="primary" href="/">返回首页</Button>} />;
   return <>
+    {loadError ? <Alert type="warning" showIcon message="订单状态暂时无法同步，正在重试" description={loadError} style={{ maxWidth: 640, margin: "24px auto 0" }} /> : null}
     {wechatNotice ? <Alert type="warning" showIcon message={wechatNotice} style={{ maxWidth: 640, margin: "24px auto 0" }} /> : null}
     <Result
       status="info"
       title="等待支付结果"
       subTitle={provider === "wechat" ? "完成支付后页面会自动更新；点击继续支付可显示微信支付二维码。" : "完成支付后页面会自动更新；如果尚未支付，可以继续打开支付宝收银台。"}
-      extra={<Space><Tag>{order.order_no}</Tag><Button type="primary" loading={retrying} onClick={() => void continuePayment()}>继续支付</Button><Button onClick={refresh}>刷新</Button><Button href="/">返回首页</Button></Space>}
+      extra={<Space wrap><Tag>{order.order_no}</Tag><Button type="primary" loading={retrying} onClick={() => void continuePayment()}>继续支付</Button><Button loading={refreshing} onClick={refresh}>刷新</Button><Button href="/">返回首页</Button></Space>}
     />
     <WechatQrModal open={qrOpen} qrImage={qrImage} onClose={() => setQrOpen(false)} />
   </>;
@@ -479,7 +504,7 @@ function WechatQrModal({ open, qrImage, onClose }: { open: boolean; qrImage: str
   return (
     <Modal open={open} onCancel={onClose} footer={null} title="微信扫码支付" width={360}>
       <div className="wechat-pay-panel">
-        {qrImage ? <img src={qrImage} alt="微信支付二维码" /> : <Spin />}
+        {qrImage ? <img src={qrImage} alt="微信支付二维码" /> : <SkeletonBar width={248} height={248} />}
         <p>请使用微信扫一扫完成支付，支付成功后页面会自动更新。</p>
       </div>
     </Modal>

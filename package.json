@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "test:ai": "node --test scripts/tests/ai.test.mjs",
     "test:payment": "node --test scripts/tests/wechat.test.mjs",
-    "test:pages": "node --test scripts/tests/pages.test.mjs",
+    "test:pages": "node --test scripts/tests/pages.test.mjs scripts/tests/loading.test.mjs",
     "test:orders": "node --test scripts/tests/orders.test.mjs",
     "preview": "vite preview",
     "cf:types": "wrangler types ./worker-configuration.d.ts",
